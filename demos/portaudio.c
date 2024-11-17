@@ -1,4 +1,4 @@
-#include <portaudio/portaudio.h>
+#include <portaudio.h>
 
 #include <stdio.h>
 #include <math.h>
