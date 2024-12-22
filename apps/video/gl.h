@@ -1,4 +1,4 @@
 #define GLFW_INCLUDE_GLCOREARB
-#include <glfw.h>
+#include <GLFW/glfw3.h>
 
 GLuint init_opengl();

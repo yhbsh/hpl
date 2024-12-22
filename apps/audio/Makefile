@@ -1,5 +1,5 @@
-CFLAGS     = -D__STDC_CONSTANT_MACROS -I../../deps/include -DGL_SILENCE_DEPRECATION
-LIBS       = -L../../deps/lib -lglfw -lavformat -lavcodec -lswscale -lswresample -lavutil -lportaudio
+CFLAGS     = -D__STDC_CONSTANT_MACROS -DGL_SILENCE_DEPRECATION $(shell pkg-config --cflags libavcodec libavformat libavutil portaudio-2.0)
+LIBS       = $(shell pkg-config --libs libavcodec libavformat libavutil portaudio-2.0)
 FRAMEWORKS = -framework CoreMedia -framework CoreVideo -framework Videotoolbox -framework OpenGL -framework Cocoa -framework IOKit -framework CoreAudio -framework AudioToolbox
 
 all: main
