@@ -1,3 +1,4 @@
 *.dSYM/
 .cache/
 compile_commands.json
+main
