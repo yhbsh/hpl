@@ -1,8 +1,8 @@
 #define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio.h"
 
-#include <stdio.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -19,11 +19,11 @@ typedef struct {
 
 void audio_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma_uint32 frameCount) {
     RingBuffer *ringBuffer = (RingBuffer *)pDevice->pUserData;
-    float *pOutputF32      = (float *)pOutput;
+    float *pOutputF32 = (float *)pOutput;
 
     for (ma_uint32 i = 0; i < frameCount; ++i) {
         if (ringBuffer->availableSamples > 0) {
-            pOutputF32[i]         = ringBuffer->buffer[ringBuffer->readIndex];
+            pOutputF32[i] = ringBuffer->buffer[ringBuffer->readIndex];
             ringBuffer->readIndex = (ringBuffer->readIndex + 1) % BUFFER_SIZE;
             --ringBuffer->availableSamples;
         } else {
@@ -36,14 +36,14 @@ int main() {
     ma_device_config config;
     ma_device device;
     RingBuffer ringBuffer = {.writeIndex = 0, .readIndex = 0, .availableSamples = 0};
-    float phase           = 0.0f;
+    float phase = 0.0f;
 
-    config                   = ma_device_config_init(ma_device_type_playback);
-    config.playback.format   = ma_format_f32;
+    config = ma_device_config_init(ma_device_type_playback);
+    config.playback.format = ma_format_f32;
     config.playback.channels = CHANNELS;
-    config.sampleRate        = SAMPLE_RATE;
-    config.dataCallback      = audio_callback;
-    config.pUserData         = &ringBuffer;
+    config.sampleRate = SAMPLE_RATE;
+    config.dataCallback = audio_callback;
+    config.pUserData = &ringBuffer;
 
     if (ma_device_init(NULL, &config, &device) != MA_SUCCESS) {
         fprintf(stderr, "ERROR: ma_device_init\n");
@@ -60,7 +60,7 @@ int main() {
         printf("%zu\n", ringBuffer.writeIndex);
         if (ringBuffer.availableSamples < BUFFER_SIZE) {
             ringBuffer.buffer[ringBuffer.writeIndex] = sinf(phase);
-            ringBuffer.writeIndex                    = (ringBuffer.writeIndex + 1) % BUFFER_SIZE;
+            ringBuffer.writeIndex = (ringBuffer.writeIndex + 1) % BUFFER_SIZE;
             ++ringBuffer.availableSamples;
 
             phase += 2.0f * M_PI * 440.0f / SAMPLE_RATE; // Frequency: 440 Hz

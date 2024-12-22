@@ -6,7 +6,7 @@ extern "C" {
 }
 
 #define GLFW_INCLUDE_GLCOREARB
-#include <glfw.h>
+#include <GLFW/glfw3.h>
 
 #include <stdio.h>
 
@@ -109,8 +109,8 @@ int main(int argc, const char *argv[]) {
     glfwInit();
 
 #define WINDOWS_COUNT 16
-    int columns       = 4;
-    int window_width  = 480;
+    int columns = 4;
+    int window_width = 480;
     int window_height = 270;
 
     GLFWwindow *windows[WINDOWS_COUNT];
@@ -120,8 +120,8 @@ int main(int argc, const char *argv[]) {
     GLuint textures[WINDOWS_COUNT][3];
 
     for (int i = 0; i < WINDOWS_COUNT; i++) {
-        int row   = i / columns;
-        int col   = i % columns;
+        int row = i / columns;
+        int col = i % columns;
         int pos_x = col * (window_width);
         int pos_y = row * (window_height);
 
@@ -187,13 +187,13 @@ int main(int argc, const char *argv[]) {
     avformat_open_input(&format_context, argv[1], NULL, &options);
     avformat_find_stream_info(format_context, NULL);
 
-    AVPacket *pkt  = av_packet_alloc();
+    AVPacket *pkt = av_packet_alloc();
     AVFrame *frame = av_frame_alloc();
 
-    const AVCodec *vc   = NULL;
-    const AVCodec *ac   = NULL;
-    int vci             = av_find_best_stream(format_context, AVMEDIA_TYPE_VIDEO, -1, -1, &vc, 0);
-    int aci             = av_find_best_stream(format_context, AVMEDIA_TYPE_AUDIO, -1, -1, &ac, 0);
+    const AVCodec *vc = NULL;
+    const AVCodec *ac = NULL;
+    int vci = av_find_best_stream(format_context, AVMEDIA_TYPE_VIDEO, -1, -1, &vc, 0);
+    int aci = av_find_best_stream(format_context, AVMEDIA_TYPE_AUDIO, -1, -1, &ac, 0);
     AVCodecContext *vcc = NULL;
     AVCodecContext *acc = NULL;
 
@@ -216,7 +216,8 @@ int main(int argc, const char *argv[]) {
             ret = avcodec_send_packet(vcc, pkt);
             while (ret >= 0) {
                 ret = avcodec_receive_frame(vcc, frame);
-                if (ret == AVERROR_EOF || ret == AVERROR(EAGAIN)) break;
+                if (ret == AVERROR_EOF || ret == AVERROR(EAGAIN))
+                    break;
 
                 for (int i = 0; i < curr_windows; i++) {
                     GLFWwindow *window = windows[i];
@@ -230,19 +231,22 @@ int main(int argc, const char *argv[]) {
                         glBindTexture(GL_TEXTURE_2D, textures[i][0]);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-                        glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, frame->width / 1, frame->height / 1, 0, GL_RED, GL_UNSIGNED_BYTE, frame->data[0]);
+                        glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, frame->width / 1, frame->height / 1, 0, GL_RED,
+                                     GL_UNSIGNED_BYTE, frame->data[0]);
 
                         glActiveTexture(GL_TEXTURE1);
                         glBindTexture(GL_TEXTURE_2D, textures[i][1]);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-                        glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, frame->width / 2, frame->height / 2, 0, GL_RED, GL_UNSIGNED_BYTE, frame->data[1]);
+                        glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, frame->width / 2, frame->height / 2, 0, GL_RED,
+                                     GL_UNSIGNED_BYTE, frame->data[1]);
 
                         glActiveTexture(GL_TEXTURE2);
                         glBindTexture(GL_TEXTURE_2D, textures[i][2]);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-                        glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, frame->width / 2, frame->height / 2, 0, GL_RED, GL_UNSIGNED_BYTE, frame->data[2]);
+                        glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, frame->width / 2, frame->height / 2, 0, GL_RED,
+                                     GL_UNSIGNED_BYTE, frame->data[2]);
                         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
 
                         glfwPollEvents();

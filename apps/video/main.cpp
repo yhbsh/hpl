@@ -1,8 +1,8 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
-#include <libswscale/swscale.h>
 #include <libavutil/time.h>
+#include <libswscale/swscale.h>
 }
 
 #include "gl.h"
@@ -49,7 +49,8 @@ int main(int argc, const char *argv[]) {
         avcodec_parameters_to_context(vcc, format_context->streams[vci]->codecpar);
         avcodec_open2(vcc, vc, NULL);
 
-        sws_ctx = sws_getContext(vcc->width, vcc->height, vcc->pix_fmt, 1280, 720, AV_PIX_FMT_RGB24, SWS_BILINEAR, NULL, NULL, NULL);
+        sws_ctx = sws_getContext(vcc->width, vcc->height, vcc->pix_fmt, 1280, 720, AV_PIX_FMT_RGB24, SWS_BILINEAR, NULL,
+                                 NULL, NULL);
     }
 
     int64_t its = av_gettime_relative();
@@ -57,11 +58,12 @@ int main(int argc, const char *argv[]) {
     GLFWwindow *window = init_window();
     GLuint prog = init_opengl();
 
-
     while (!glfwWindowShouldClose(window)) {
         ret = av_read_frame(format_context, packet);
-        if (ret == AVERROR_EOF) break;
-        if (ret == AVERROR(EAGAIN)) continue;
+        if (ret == AVERROR_EOF)
+            break;
+        if (ret == AVERROR(EAGAIN))
+            continue;
 
         for (int key = GLFW_KEY_0; key < GLFW_KEY_9; key++) {
             if (glfwGetKey(window, key) == GLFW_PRESS) {
@@ -69,13 +71,15 @@ int main(int argc, const char *argv[]) {
             }
         }
 
-        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) break;
+        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS)
+            break;
 
         if (vcc && packet->stream_index == vci) {
             ret = avcodec_send_packet(vcc, packet);
             while (ret >= 0) {
                 ret = avcodec_receive_frame(vcc, frame);
-                if (ret == AVERROR_EOF || ret == AVERROR(EAGAIN)) break;
+                if (ret == AVERROR_EOF || ret == AVERROR(EAGAIN))
+                    break;
 
                 if ((ret = sws_scale_frame(sws_ctx, sw_vframe, frame)) < 0) {
                     fprintf(stderr, "ERROR: sws_scale_frame %s\n", av_err2str(ret));
@@ -85,15 +89,17 @@ int main(int argc, const char *argv[]) {
                 AVStream *vstream = format_context->streams[vci];
                 int64_t fts = (1e6 * frame->pts * vstream->time_base.num) / vstream->time_base.den;
                 int64_t rts = av_gettime_relative() - its;
-                if (fts > rts) av_usleep(fts - rts);
+                if (fts > rts)
+                    av_usleep(fts - rts);
 
                 glClear(GL_COLOR_BUFFER_BIT);
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, sw_vframe->width, sw_vframe->height, 0, GL_RGB, GL_UNSIGNED_BYTE, sw_vframe->data[0]);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, sw_vframe->width, sw_vframe->height, 0, GL_RGB, GL_UNSIGNED_BYTE,
+                             sw_vframe->data[0]);
                 glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
                 glfwSwapBuffers(window);
                 glfwPollEvents();
             }
-        } 
+        }
 
         av_packet_unref(packet);
     }

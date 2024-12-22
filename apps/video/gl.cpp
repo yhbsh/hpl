@@ -103,5 +103,4 @@ void main() {
     glLinkProgram(prog);
     glUseProgram(prog);
     return prog;
-    }
-
+}

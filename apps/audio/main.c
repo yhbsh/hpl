@@ -1,10 +1,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
-#include <libavutil/opt.h>
+#include <libavformat/avformat.h>
 #include <libavutil/channel_layout.h>
+#include <libavutil/opt.h>
 #include <libswresample/swresample.h>
 
 #include <portaudio.h>
@@ -108,15 +108,10 @@ int main(int argc, const char *argv[]) {
     outputParameters.suggestedLatency = Pa_GetDeviceInfo(outputParameters.device)->defaultLowOutputLatency;
     outputParameters.hostApiSpecificStreamInfo = NULL;
 
-    pa_err = Pa_OpenStream(
-        &pa_stream,
-        NULL, /* no input */
-        &outputParameters,
-        out_sample_rate,
-        paFramesPerBufferUnspecified,
-        paClipOff,
-        NULL, /* no callback */
-        NULL  /* no user data */
+    pa_err = Pa_OpenStream(&pa_stream, NULL, /* no input */
+                           &outputParameters, out_sample_rate, paFramesPerBufferUnspecified, paClipOff,
+                           NULL, /* no callback */
+                           NULL  /* no user data */
     );
     if (pa_err != paNoError) {
         fprintf(stderr, "ERROR: Failed to open PortAudio stream: %s\n", Pa_GetErrorText(pa_err));
@@ -132,8 +127,10 @@ int main(int argc, const char *argv[]) {
     // Main decoding and playback loop
     while (1) {
         ret = av_read_frame(format_context, packet);
-        if (ret == AVERROR_EOF) break;
-        if (ret == AVERROR(EAGAIN)) continue;
+        if (ret == AVERROR_EOF)
+            break;
+        if (ret == AVERROR(EAGAIN))
+            continue;
         if (ret < 0) {
             fprintf(stderr, "ERROR: av_read_frame %s\n", av_err2str(ret));
             break;
@@ -148,7 +145,8 @@ int main(int argc, const char *argv[]) {
             }
             while (ret >= 0) {
                 ret = avcodec_receive_frame(codec_context, frame);
-                if (ret == AVERROR_EOF || ret == AVERROR(EAGAIN)) break;
+                if (ret == AVERROR_EOF || ret == AVERROR(EAGAIN))
+                    break;
                 if (ret < 0) {
                     fprintf(stderr, "ERROR: avcodec_receive_frame %s\n", av_err2str(ret));
                     goto cleanup_stream;
@@ -156,8 +154,7 @@ int main(int argc, const char *argv[]) {
 
                 // Update resampler if input params change
                 if (!av_channel_layout_compare(&frame->ch_layout, &codec_context->ch_layout) ||
-                    frame->sample_rate != codec_context->sample_rate ||
-                    frame->format != codec_context->sample_fmt) {
+                    frame->sample_rate != codec_context->sample_rate || frame->format != codec_context->sample_fmt) {
 
                     av_channel_layout_copy(&codec_context->ch_layout, &frame->ch_layout);
                     codec_context->sample_rate = frame->sample_rate;
@@ -186,8 +183,9 @@ int main(int argc, const char *argv[]) {
 
                 // Allocate buffer for resampled data
                 uint8_t **resampled_data = NULL;
-                int resampled_nb_samples = av_rescale_rnd(swr_get_delay(swr_ctx, codec_context->sample_rate) + frame->nb_samples,
-                                                          out_sample_rate, codec_context->sample_rate, AV_ROUND_UP);
+                int resampled_nb_samples =
+                    av_rescale_rnd(swr_get_delay(swr_ctx, codec_context->sample_rate) + frame->nb_samples,
+                                   out_sample_rate, codec_context->sample_rate, AV_ROUND_UP);
                 int resampled_nb_channels = out_ch_layout.nb_channels;
                 ret = av_samples_alloc_array_and_samples(&resampled_data, NULL, resampled_nb_channels,
                                                          resampled_nb_samples, out_sample_fmt, 0);
@@ -197,8 +195,8 @@ int main(int argc, const char *argv[]) {
                 }
 
                 // Resample
-                ret = swr_convert(swr_ctx, resampled_data, resampled_nb_samples,
-                                  (const uint8_t **)frame->extended_data, frame->nb_samples);
+                ret = swr_convert(swr_ctx, resampled_data, resampled_nb_samples, (const uint8_t **)frame->extended_data,
+                                  frame->nb_samples);
                 if (ret < 0) {
                     fprintf(stderr, "ERROR: swr_convert %s\n", av_err2str(ret));
                     av_freep(&resampled_data[0]);
@@ -206,7 +204,8 @@ int main(int argc, const char *argv[]) {
                     goto cleanup_stream;
                 }
 
-                int resampled_data_size = av_samples_get_buffer_size(NULL, resampled_nb_channels, ret, out_sample_fmt, 1);
+                int resampled_data_size =
+                    av_samples_get_buffer_size(NULL, resampled_nb_channels, ret, out_sample_fmt, 1);
                 if (resampled_data_size < 0) {
                     fprintf(stderr, "ERROR: av_samples_get_buffer_size %s\n", av_err2str(resampled_data_size));
                     av_freep(&resampled_data[0]);
@@ -236,7 +235,8 @@ int main(int argc, const char *argv[]) {
     avcodec_send_packet(codec_context, NULL);
     while (1) {
         ret = avcodec_receive_frame(codec_context, frame);
-        if (ret == AVERROR_EOF || ret == AVERROR(EAGAIN)) break;
+        if (ret == AVERROR_EOF || ret == AVERROR(EAGAIN))
+            break;
         if (ret < 0) {
             fprintf(stderr, "ERROR: avcodec_receive_frame %s\n", av_err2str(ret));
             goto cleanup_stream;
@@ -244,19 +244,20 @@ int main(int argc, const char *argv[]) {
 
         // Resample and play the remaining frames (same as above)
         uint8_t **resampled_data = NULL;
-        int resampled_nb_samples = av_rescale_rnd(swr_get_delay(swr_ctx, codec_context->sample_rate) + frame->nb_samples,
-                                                  out_sample_rate, codec_context->sample_rate, AV_ROUND_UP);
+        int resampled_nb_samples =
+            av_rescale_rnd(swr_get_delay(swr_ctx, codec_context->sample_rate) + frame->nb_samples, out_sample_rate,
+                           codec_context->sample_rate, AV_ROUND_UP);
         int resampled_nb_channels = out_ch_layout.nb_channels;
-        ret = av_samples_alloc_array_and_samples(&resampled_data, NULL, resampled_nb_channels,
-                                                 resampled_nb_samples, out_sample_fmt, 0);
+        ret = av_samples_alloc_array_and_samples(&resampled_data, NULL, resampled_nb_channels, resampled_nb_samples,
+                                                 out_sample_fmt, 0);
         if (ret < 0) {
             fprintf(stderr, "ERROR: av_samples_alloc_array_and_samples %s\n", av_err2str(ret));
             goto cleanup_stream;
         }
 
         // Resample
-        ret = swr_convert(swr_ctx, resampled_data, resampled_nb_samples,
-                          (const uint8_t **)frame->extended_data, frame->nb_samples);
+        ret = swr_convert(swr_ctx, resampled_data, resampled_nb_samples, (const uint8_t **)frame->extended_data,
+                          frame->nb_samples);
         if (ret < 0) {
             fprintf(stderr, "ERROR: swr_convert %s\n", av_err2str(ret));
             av_freep(&resampled_data[0]);

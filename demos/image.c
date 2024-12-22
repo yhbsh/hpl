@@ -9,7 +9,7 @@
 #include <unistd.h>
 
 #define STB_IMAGE_IMPLEMENTATION
-#include <stb_image.h>
+#include "stb_image.h"
 
 GLuint load_shader(const char *file_path, GLenum shader_type) {
     FILE *file = fopen(file_path, "rb");
@@ -77,7 +77,7 @@ GLuint load_program(GLuint vert_shader, GLuint frag_shader) {
 int load_images(const char *directory, GLuint **textures, int *textures_count) {
     DIR *dir;
     struct dirent *entry;
-    int count    = 0;
+    int count = 0;
     char **paths = NULL;
 
     dir = opendir(directory);
@@ -87,20 +87,24 @@ int load_images(const char *directory, GLuint **textures, int *textures_count) {
     }
 
     while ((entry = readdir(dir)) != NULL) {
-        if (strstr(entry->d_name, ".jpeg") || strstr(entry->d_name, ".jpg") || strstr(entry->d_name, ".png") || strstr(entry->d_name, ".bmp") || strstr(entry->d_name, ".gif") || strstr(entry->d_name, ".psd") || strstr(entry->d_name, ".tga") || strstr(entry->d_name, ".pic") ||
-            strstr(entry->d_name, ".ppm") || strstr(entry->d_name, ".pgm")) {
+        if (strstr(entry->d_name, ".jpeg") || strstr(entry->d_name, ".jpg") || strstr(entry->d_name, ".png") ||
+            strstr(entry->d_name, ".bmp") || strstr(entry->d_name, ".gif") || strstr(entry->d_name, ".psd") ||
+            strstr(entry->d_name, ".tga") || strstr(entry->d_name, ".pic") || strstr(entry->d_name, ".ppm") ||
+            strstr(entry->d_name, ".pgm")) {
             count++;
         }
     }
 
-    paths     = (char **)malloc(count * sizeof(char *));
+    paths = (char **)malloc(count * sizeof(char *));
     *textures = (GLuint *)malloc(count * sizeof(GLuint));
 
     rewinddir(dir);
     int index = 0;
     while ((entry = readdir(dir)) != NULL) {
-        if (strstr(entry->d_name, ".jpeg") || strstr(entry->d_name, ".jpg") || strstr(entry->d_name, ".png") || strstr(entry->d_name, ".bmp") || strstr(entry->d_name, ".gif") || strstr(entry->d_name, ".psd") || strstr(entry->d_name, ".tga") || strstr(entry->d_name, ".pic") ||
-            strstr(entry->d_name, ".ppm") || strstr(entry->d_name, ".pgm")) {
+        if (strstr(entry->d_name, ".jpeg") || strstr(entry->d_name, ".jpg") || strstr(entry->d_name, ".png") ||
+            strstr(entry->d_name, ".bmp") || strstr(entry->d_name, ".gif") || strstr(entry->d_name, ".psd") ||
+            strstr(entry->d_name, ".tga") || strstr(entry->d_name, ".pic") || strstr(entry->d_name, ".ppm") ||
+            strstr(entry->d_name, ".pgm")) {
             char filepath[1024];
             snprintf(filepath, sizeof(filepath), "%s/%s", directory, entry->d_name);
             paths[index] = strdup(filepath);
@@ -168,9 +172,9 @@ int main(void) {
 
     GLuint vert_shader = load_shader("assets/image_vert.glsl", GL_VERTEX_SHADER);
     GLuint frag_shader = load_shader("assets/image_frag.glsl", GL_FRAGMENT_SHADER);
-    GLuint program     = load_program(vert_shader, frag_shader);
+    GLuint program = load_program(vert_shader, frag_shader);
 
-    GLuint *textures   = NULL;
+    GLuint *textures = NULL;
     int textures_count = 0;
 
     int ret;
@@ -205,12 +209,13 @@ int main(void) {
 
     GLuint texcoords_attribute = glGetAttribLocation(program, "texCoord");
     glEnableVertexAttribArray(texcoords_attribute);
-    glVertexAttribPointer(texcoords_attribute, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), (GLvoid *)(2 * sizeof(GLfloat)));
+    glVertexAttribPointer(texcoords_attribute, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat),
+                          (GLvoid *)(2 * sizeof(GLfloat)));
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindVertexArray(0);
 
-    double lastSwapTime   = glfwGetTime();
+    double lastSwapTime = glfwGetTime();
     int currentImageIndex = 0;
 
     while (!glfwWindowShouldClose(window)) {
