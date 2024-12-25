@@ -1,5 +1,7 @@
 #include "gl.h"
 
+extern "C" {
+
 GLuint init_opengl() {
     // clang-format off
     GLfloat vertices[] = {
@@ -103,4 +105,5 @@ void main() {
     glLinkProgram(prog);
     glUseProgram(prog);
     return prog;
+}
 }

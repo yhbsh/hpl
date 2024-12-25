@@ -4,8 +4,14 @@ FRAMEWORKS = -framework CoreMedia -framework CoreVideo -framework Videotoolbox -
 
 all: main
 
-main: main.cpp
-	clang++ -std=c++11 $(CFLAGS) main.cpp gl.cpp -o main $(LIBS) $(FRAMEWORKS)
+main.o: main.c
+	clang $(CFLAGS) -c main.c
+
+gl.o: gl.cpp
+	clang++ -std=c++11 $(CFLAGS) -c gl.cpp
+
+main: main.o gl.o
+	clang++ main.o gl.o -o main $(LIBS) $(FRAMEWORKS)
 
 clean:
-	rm -f main
+	rm -f *.o main
