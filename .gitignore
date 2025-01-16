@@ -1,5 +1,6 @@
 *.dSYM/
 .cache/
 compile_commands.json
-main
+audio
+video
 *.o
