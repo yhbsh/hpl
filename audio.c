@@ -1,11 +1,11 @@
-#include <stdio.h>
-#include <stdlib.h>
-
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/opt.h>
 #include <libswresample/swresample.h>
+
+#include <stdio.h>
+#include <stdlib.h>
 
 #include <portaudio.h>
 
