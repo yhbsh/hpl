@@ -133,7 +133,7 @@ int main(int argc, const char *argv[]) {
         return 1;
     }
 
-    av_log_set_level(AV_LOG_DEBUG);
+    //av_log_set_level(AV_LOG_DEBUG);
     int ret;
     AVFormatContext *format_context = NULL;
     if ((ret = avformat_open_input(&format_context, argv[1], NULL, NULL)) < 0) {
@@ -180,12 +180,19 @@ int main(int argc, const char *argv[]) {
     GLuint prog = init_opengl();
 
     while (!glfwWindowShouldClose(window)) {
-        ret = av_read_frame(format_context, packet);
-        if (ret == AVERROR_EOF)
+        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) {
             break;
+        }
 
-        if (ret == AVERROR(EAGAIN))
+        ret = av_read_frame(format_context, packet);
+        if (ret == AVERROR_EOF) {
+            break;
+        }
+
+        if (ret == AVERROR(EAGAIN)) {
+            av_packet_unref(packet);
             continue;
+        }
 
         for (int key = GLFW_KEY_0; key < GLFW_KEY_9; key++) {
             if (glfwGetKey(window, key) == GLFW_PRESS) {
@@ -193,16 +200,8 @@ int main(int argc, const char *argv[]) {
             }
         }
 
-        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS)
-            break;
-
-        if (vcodec_ctx && packet->stream_index == vci) {
-            ret = avcodec_send_packet(vcodec_ctx, packet);
-            while (ret >= 0) {
-                ret = avcodec_receive_frame(vcodec_ctx, frame);
-                if (ret == AVERROR_EOF || ret == AVERROR(EAGAIN))
-                    break;
-
+        if (vcodec_ctx && packet->stream_index == vci && avcodec_send_packet(vcodec_ctx, packet) == 0) {
+            while (avcodec_receive_frame(vcodec_ctx, frame) == 0) {
                 if ((ret = sws_scale_frame(sws_ctx, sw_vframe, frame)) < 0) {
                     fprintf(stderr, "ERROR: sws_scale_frame %s\n", av_err2str(ret));
                     return 1;
