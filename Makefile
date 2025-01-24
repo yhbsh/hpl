@@ -10,4 +10,4 @@ audio: audio.c
 	clang $(CFLAGS) audio.c -o audio $(LIBS) -framework OpenGL
 
 clean:
-	rm -f video
+	rm -f video audio
