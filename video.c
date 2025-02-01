@@ -127,19 +127,20 @@ GLFWwindow *init_window(void) {
     return window;
 }
 
+static int ret;
+
 int main(int argc, const char *argv[]) {
     if (argc != 2) {
         printf("USAGE: %s <url>\n", argv[0]);
         return 1;
     }
 
-    //av_log_set_level(AV_LOG_DEBUG);
-    int ret;
     AVFormatContext *format_context = NULL;
     if ((ret = avformat_open_input(&format_context, argv[1], NULL, NULL)) < 0) {
         fprintf(stderr, "ERROR: cannot open input %s\n", av_err2str(ret));
         return 1;
     }
+
     if ((ret = avformat_find_stream_info(format_context, NULL)) < 0) {
         fprintf(stderr, "ERROR: cannot read stream info %s\n", av_err2str(ret));
         return 1;
@@ -147,8 +148,10 @@ int main(int argc, const char *argv[]) {
 
     AVPacket *packet = av_packet_alloc();
     if (!packet) return 1;
+
     AVFrame *frame = av_frame_alloc();
     if (!frame) return 1;
+
     AVFrame *sw_vframe = av_frame_alloc();
     if (!frame) return 1;
 
