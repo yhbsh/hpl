@@ -1,3 +1,4 @@
+#include "libavutil/dict.h"
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/time.h>
@@ -8,7 +9,73 @@
 
 #include <stdio.h>
 
-GLuint init_opengl() {
+int main(int argc, const char *argv[]) {
+    if (argc != 2) {
+        printf("USAGE: %s <url>\n", argv[0]);
+        return 1;
+    }
+
+    int ret;
+
+    av_log_set_level(AV_LOG_DEBUG);
+    AVFormatContext *format_context = NULL;
+    AVDictionary *options = NULL;
+    av_dict_set(&options, "protocol_whitelist", "tcp,rtmp", 0);
+
+    if ((ret = avformat_open_input(&format_context, argv[1], NULL, &options)) < 0) {
+        fprintf(stderr, "ERROR: cannot open input %s\n", av_err2str(ret));
+        return 1;
+    }
+
+    if ((ret = avformat_find_stream_info(format_context, NULL)) < 0) {
+        fprintf(stderr, "ERROR: cannot read stream info %s\n", av_err2str(ret));
+        return 1;
+    }
+
+    AVPacket *packet = av_packet_alloc();
+    if (!packet) return 1;
+
+    AVFrame *frame = av_frame_alloc();
+    if (!frame) return 1;
+
+    AVFrame *sw_vframe = av_frame_alloc();
+    if (!frame) return 1;
+
+    const AVCodec *vc = NULL;
+    int vci = av_find_best_stream(format_context, AVMEDIA_TYPE_VIDEO, -1, -1, &vc, 0);
+    if (vci < 0) {
+        fprintf(stderr, "ERROR: cannot find video stream %s\n", av_err2str(ret));
+        return 1;
+    }
+
+    AVCodecContext *vcodec_ctx = avcodec_alloc_context3(vc);
+    if ((ret = avcodec_parameters_to_context(vcodec_ctx, format_context->streams[vci]->codecpar)) < 0) {
+        fprintf(stderr, "ERROR: cannot copy stream codec parameters to codec context %s\n", av_err2str(ret));
+        return 1;
+    }
+
+    if ((ret = avcodec_open2(vcodec_ctx, vc, NULL)) < 0) {
+        fprintf(stderr, "ERROR: cannot open codec %s\n", av_err2str(ret));
+        return 1;
+    }
+
+    struct SwsContext *sws_ctx = sws_getContext(vcodec_ctx->width, vcodec_ctx->height, vcodec_ctx->pix_fmt, 1280, 720, AV_PIX_FMT_RGB24, SWS_BILINEAR, NULL, NULL, NULL);
+    if (!sws_ctx) {
+        fprintf(stderr, "ERROR: cannot create software scaling context\n");
+    }
+
+    int64_t its = av_gettime_relative();
+
+    glfwInit();
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+    GLFWwindow *window = glfwCreateWindow(1280, 720, "WINDOW", NULL, NULL);
+    glfwSetWindowSizeLimits(window, 480, 270, GLFW_DONT_CARE, GLFW_DONT_CARE);
+    glfwSetWindowAspectRatio(window, 1280, 720);
+    glfwMakeContextCurrent(window);
+
     // clang-format off
     GLfloat vertices[] = {
         -1.0, -1.0, +0.0, +1.0,
@@ -111,77 +178,7 @@ GLuint init_opengl() {
     glAttachShader(prog, fragment_shader);
     glLinkProgram(prog);
     glUseProgram(prog);
-    return prog;
-}
 
-GLFWwindow *init_window(void) {
-    glfwInit();
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
-    GLFWwindow *window = glfwCreateWindow(1280, 720, "WINDOW", NULL, NULL);
-    glfwSetWindowSizeLimits(window, 480, 270, GLFW_DONT_CARE, GLFW_DONT_CARE);
-    glfwSetWindowAspectRatio(window, 1280, 720);
-    glfwMakeContextCurrent(window);
-    return window;
-}
-
-static int ret;
-
-int main(int argc, const char *argv[]) {
-    if (argc != 2) {
-        printf("USAGE: %s <url>\n", argv[0]);
-        return 1;
-    }
-
-    av_log_set_level(AV_LOG_DEBUG);
-    AVFormatContext *format_context = NULL;
-    if ((ret = avformat_open_input(&format_context, argv[1], NULL, NULL)) < 0) {
-        fprintf(stderr, "ERROR: cannot open input %s\n", av_err2str(ret));
-        return 1;
-    }
-
-    if ((ret = avformat_find_stream_info(format_context, NULL)) < 0) {
-        fprintf(stderr, "ERROR: cannot read stream info %s\n", av_err2str(ret));
-        return 1;
-    }
-
-    AVPacket *packet = av_packet_alloc();
-    if (!packet) return 1;
-
-    AVFrame *frame = av_frame_alloc();
-    if (!frame) return 1;
-
-    AVFrame *sw_vframe = av_frame_alloc();
-    if (!frame) return 1;
-
-    const AVCodec *vc = NULL;
-    int vci = av_find_best_stream(format_context, AVMEDIA_TYPE_VIDEO, -1, -1, &vc, 0);
-    if (vci < 0) {
-        fprintf(stderr, "ERROR: cannot find video stream %s\n", av_err2str(ret));
-        return 1;
-    }
-
-    AVCodecContext *vcodec_ctx = avcodec_alloc_context3(vc);
-    if ((ret = avcodec_parameters_to_context(vcodec_ctx, format_context->streams[vci]->codecpar)) < 0) {
-        fprintf(stderr, "ERROR: cannot copy stream codec parameters to codec context %s\n", av_err2str(ret));
-        return 1;
-    }
-
-    if ((ret = avcodec_open2(vcodec_ctx, vc, NULL)) < 0) {
-        fprintf(stderr, "ERROR: cannot open codec %s\n", av_err2str(ret));
-        return 1;
-    }
-
-    struct SwsContext *sws_ctx = sws_getContext(vcodec_ctx->width, vcodec_ctx->height, vcodec_ctx->pix_fmt, 1280, 720, AV_PIX_FMT_RGB24, SWS_BILINEAR, NULL, NULL, NULL);
-    if (!sws_ctx) {
-        fprintf(stderr, "ERROR: cannot create software scaling context\n");
-    }
-
-    int64_t its = av_gettime_relative();
-    GLFWwindow *window = init_window();
-    GLuint prog = init_opengl();
 
     while (!glfwWindowShouldClose(window)) {
         if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) {
