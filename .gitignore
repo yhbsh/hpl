@@ -3,5 +3,6 @@
 compile_commands.json
 audio
 video
+main
 *.o
 .deps
