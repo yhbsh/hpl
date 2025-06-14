@@ -34,33 +34,53 @@ int main(int argc, const char *argv[]) {
     AVPacket *packet = av_packet_alloc();
     if (!packet) return 1;
 
-    AVFrame *frame = av_frame_alloc();
-    if (!frame) return 1;
+    AVFrame *frame0 = av_frame_alloc();
+    if (!frame0) return 1;
 
-    AVFrame *sw_vframe = av_frame_alloc();
-    if (!frame) return 1;
+    AVFrame *frame1 = av_frame_alloc();
+    if (!frame0) return 1;
 
-    const AVCodec *vc = NULL;
-    int vci = av_find_best_stream(format_context, AVMEDIA_TYPE_VIDEO, -1, -1, &vc, 0);
-    if (vci < 0) {
-        fprintf(stderr, "ERROR: cannot find video stream %s\n", av_err2str(ret));
+    // Video
+    const AVCodec *video_codec = NULL;
+    if ((ret = av_find_best_stream(format_context, AVMEDIA_TYPE_VIDEO, -1, -1, &video_codec, 0)) < 0) {
+        fprintf(stderr, "ERROR: cannot find video stream. %s\n", av_err2str(ret));
         return 1;
     }
 
-    AVCodecContext *vcodec_ctx = avcodec_alloc_context3(vc);
-    if ((ret = avcodec_parameters_to_context(vcodec_ctx, format_context->streams[vci]->codecpar)) < 0) {
+    AVStream *video_stream = format_context->streams[ret];
+    AVCodecContext *video_codec_context = avcodec_alloc_context3(video_codec);
+    if ((ret = avcodec_parameters_to_context(video_codec_context, video_stream->codecpar)) < 0) {
         fprintf(stderr, "ERROR: cannot copy stream codec parameters to codec context %s\n", av_err2str(ret));
         return 1;
     }
 
-    if ((ret = avcodec_open2(vcodec_ctx, vc, NULL)) < 0) {
+    if ((ret = avcodec_open2(video_codec_context, video_codec, NULL)) < 0) {
         fprintf(stderr, "ERROR: cannot open codec %s\n", av_err2str(ret));
         return 1;
     }
 
-    struct SwsContext *sws_ctx = sws_getContext(vcodec_ctx->width, vcodec_ctx->height, vcodec_ctx->pix_fmt, 1280, 720, AV_PIX_FMT_RGB24, SWS_BILINEAR, NULL, NULL, NULL);
+    struct SwsContext *sws_ctx = sws_getContext(video_codec_context->width, video_codec_context->height, video_codec_context->pix_fmt, 1280, 720, AV_PIX_FMT_RGB24, SWS_BILINEAR, NULL, NULL, NULL);
     if (!sws_ctx) {
         fprintf(stderr, "ERROR: cannot create software scaling context\n");
+    }
+
+    // Audio
+    const AVCodec *audio_codec = NULL;
+    if ((ret = av_find_best_stream(format_context, AVMEDIA_TYPE_AUDIO, -1, -1, &audio_codec, 0)) < 0) {
+        fprintf(stderr, "ERROR: cannot find audio stream. %s\n", av_err2str(ret));
+        return 1;
+    }
+
+    AVStream *audio_stream = format_context->streams[ret];
+    AVCodecContext *audio_codec_context = avcodec_alloc_context3(audio_codec);
+    if ((ret = avcodec_parameters_to_context(audio_codec_context, audio_stream->codecpar)) < 0) {
+        fprintf(stderr, "ERROR: cannot copy stream codec parameters to codec context %s\n", av_err2str(ret));
+        return 1;
+    }
+
+    if ((ret = avcodec_open2(audio_codec_context, audio_codec, NULL)) < 0) {
+        fprintf(stderr, "ERROR: cannot open codec %s\n", av_err2str(ret));
+        return 1;
     }
 
     int64_t its = av_gettime_relative();
@@ -74,6 +94,8 @@ int main(int argc, const char *argv[]) {
     glfwSetWindowSizeLimits(window, 480, 270, GLFW_DONT_CARE, GLFW_DONT_CARE);
     glfwSetWindowAspectRatio(window, 1280, 720);
     glfwMakeContextCurrent(window);
+    glClearColor(0, 0, 0, 1);
+
 
     // clang-format off
     GLfloat vertices[] = {
@@ -97,48 +119,15 @@ int main(int argc, const char *argv[]) {
                                               "void main() {\n"
                                               "    gl_Position = vec4(position, 0.0, 1.0);\n"
                                               "    TexCoord = texCoord;\n"
-                                              "}\n"
-                                              "\n";
+                                              "}";
 
     static const char *fragment_shader_source = "#version 410 core\n"
                                                 "in vec2 TexCoord;\n"
-                                                "\n"
                                                 "uniform sampler2D Texture;\n"
-                                                "uniform int Filter;\n"
-                                                "\n"
-                                                "out vec4 FragColor;\n"
-                                                "\n"
+                                                "out vec4 Color;\n"
                                                 "void main() {\n"
-                                                "    vec4 color = texture(Texture, TexCoord);\n"
-                                                "\n"
-                                                "    switch (Filter) {\n"
-                                                "        case 1: // Sepia\n"
-                                                "            color.rgb = vec3(\n"
-                                                "                clamp(color.r * 0.393 + color.g * 0.769 + color.b * 0.189, 0.0, 1.0),\n"
-                                                "                clamp(color.r * 0.349 + color.g * 0.686 + color.b * 0.168, 0.0, 1.0),\n"
-                                                "                clamp(color.r * 0.272 + color.g * 0.534 + color.b * 0.131, 0.0, 1.0)\n"
-                                                "            );\n"
-                                                "            break;\n"
-                                                "        case 2: // Grayscale\n"
-                                                "            float gray = dot(color.rgb, vec3(0.299, 0.587, 0.114));\n"
-                                                "            color.rgb = vec3(gray, gray, gray);\n"
-                                                "            break;\n"
-                                                "        case 3: // Invert\n"
-                                                "            color.rgb = vec3(1.0) - color.rgb;\n"
-                                                "            break;\n"
-                                                "        case 4: // Adjust Brightness\n"
-                                                "            color.rgb = clamp(color.rgb * 1.2, 0.0, 1.0);\n"
-                                                "            break;\n"
-                                                "        case 5: // Adjust Saturation\n"
-                                                "            float luminance = dot(color.rgb, vec3(0.299, 0.587, 0.114));\n"
-                                                "            color.rgb = mix(vec3(luminance), color.rgb, 1.5);\n"
-                                                "            break;\n"
-                                                "    }\n"
-                                                "\n"
-                                                "    FragColor = color;\n"
-                                                "}\n";
-
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+                                                "    Color = texture(Texture, TexCoord);\n"
+                                                "}";
 
     GLuint VAO;
     glGenVertexArrays(1, &VAO);
@@ -194,31 +183,38 @@ int main(int argc, const char *argv[]) {
             continue;
         }
 
-        for (int key = GLFW_KEY_0; key < GLFW_KEY_9; key++) {
-            if (glfwGetKey(window, key) == GLFW_PRESS) {
-                glUniform1i(glGetUniformLocation(prog, "Filter"), key - GLFW_KEY_0);
-            }
-        }
-
-        if (vcodec_ctx && packet->stream_index == vci && avcodec_send_packet(vcodec_ctx, packet) == 0) {
-            while (avcodec_receive_frame(vcodec_ctx, frame) == 0) {
-                if ((ret = sws_scale_frame(sws_ctx, sw_vframe, frame)) < 0) {
+        if (video_codec_context && packet->stream_index == video_stream->index && avcodec_send_packet(video_codec_context, packet) == 0) {
+            while (avcodec_receive_frame(video_codec_context, frame0) == 0) {
+                if ((ret = sws_scale_frame(sws_ctx, frame1, frame0)) < 0) {
                     fprintf(stderr, "ERROR: sws_scale_frame %s\n", av_err2str(ret));
                     return 1;
                 }
 
-                AVStream *vstream = format_context->streams[vci];
-                int64_t fts = (1e6 * frame->pts * vstream->time_base.num) / vstream->time_base.den;
+                int64_t fts = (1e6 * frame0->pts * video_stream->time_base.num) / video_stream->time_base.den;
                 int64_t rts = av_gettime_relative() - its;
                 if (fts > rts) {
                     av_usleep(fts - rts);
                 }
 
                 glClear(GL_COLOR_BUFFER_BIT);
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, sw_vframe->width, sw_vframe->height, 0, GL_RGB, GL_UNSIGNED_BYTE, sw_vframe->data[0]);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, frame1->width, frame1->height, 0, GL_RGB, GL_UNSIGNED_BYTE, frame1->data[0]);
                 glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
                 glfwSwapBuffers(window);
                 glfwPollEvents();
+
+                printf("Video Frame %lld %s...\n", video_codec_context->frame_num, video_codec->name);
+            }
+        }
+
+        if (audio_codec_context && packet->stream_index == audio_stream->index && avcodec_send_packet(audio_codec_context, packet) == 0) {
+            while (avcodec_receive_frame(audio_codec_context, frame0) == 0) {
+                int64_t fts = 1000 * 1000 * frame0->pts * audio_stream->time_base.num / audio_stream->time_base.den;
+                int64_t rts = av_gettime_relative() - its;
+                if (fts > rts) {
+                    av_usleep(fts - rts);
+                }
+
+                printf("Audio Frame %lld %s...\n", audio_codec_context->frame_num, audio_codec->name);
             }
         }
 
