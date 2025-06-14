@@ -135,7 +135,7 @@ int main(int argc, const char *argv[]) {
         return 1;
     }
 
-    av_log_set_level(AV_LOG_TRACE);
+    av_log_set_level(AV_LOG_DEBUG);
     AVFormatContext *format_context = NULL;
     if ((ret = avformat_open_input(&format_context, argv[1], NULL, NULL)) < 0) {
         fprintf(stderr, "ERROR: cannot open input %s\n", av_err2str(ret));
