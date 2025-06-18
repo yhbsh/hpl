@@ -6,14 +6,13 @@
 #include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
 
-#include "miniaudio.h"
-
-#define GLFW_INCLUDE_GLCOREARB
 #include <GLFW/glfw3.h>
 
 #include <stdbool.h>
 #include <string.h>
 #include <unistd.h>
+
+#include "miniaudio.h"
 
 typedef struct {
     AVFormatContext *format_context;
@@ -236,9 +235,7 @@ int init_window(Context *context) {
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
 
-    int width = context->video_codec_context->width; 
-    int height = context->video_codec_context->height;
-    context->window = glfwCreateWindow(width, height, "Window", NULL, NULL);
+    context->window = glfwCreateWindow(1280, 720, "Window", NULL, NULL);
     if (!context->window) {
         fprintf(stderr, "ERROR: cannot initialize glfw window\n");
         return -1;
@@ -330,6 +327,16 @@ int main(int argc, const char *argv[]) {
     Context *context = (Context *)malloc(sizeof(Context));
     memset(context, 0, sizeof(Context));
 
+    if ((ret = init_window(context)) < 0) {
+        fprintf(stderr, "ERROR: cannot initialize window\n");
+        return -1;
+    }
+
+    if ((ret = init_opengl(context)) < 0) {
+        fprintf(stderr, "ERROR: cannot initialize opengl\n");
+        return -1;
+    }
+
     if ((ret = init_input(context, argv[1])) < 0) {
         fprintf(stderr, "ERROR: cannot initialize input\n");
         return -1;
@@ -362,16 +369,6 @@ int main(int argc, const char *argv[]) {
 
     if ((ret = init_audio_device(context)) < 0) {
         fprintf(stderr, "ERROR: cannot initialize audio device\n");
-        return -1;
-    }
-
-    if ((ret = init_window(context)) < 0) {
-        fprintf(stderr, "ERROR: cannot initialize window\n");
-        return -1;
-    }
-
-    if ((ret = init_opengl(context)) < 0) {
-        fprintf(stderr, "ERROR: cannot initialize opengl\n");
         return -1;
     }
 
