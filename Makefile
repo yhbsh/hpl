@@ -1,4 +1,11 @@
-default: main
+PREFIX ?= $(HOME)/.local
+BINDIR := $(PREFIX)/bin
 
-main: main.c
-	clang -DMINIAUDIO_IMPLEMENTATION -DGL_SILENCE_DEPRECATION main.c -o main $(shell pkg-config --cflags --libs libavformat libavcodec libswscale glfw3) -framework OpenGL
+default: hpl
+
+hpl: main.c
+	clang -DMINIAUDIO_IMPLEMENTATION -DGL_SILENCE_DEPRECATION -o hpl main.c $(shell pkg-config --cflags --libs libavformat libavcodec libswscale glfw3) -framework OpenGL
+
+install: hpl
+	mkdir -p $(BINDIR)
+	cp hpl $(BINDIR)

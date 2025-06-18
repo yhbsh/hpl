@@ -4,5 +4,6 @@ compile_commands.json
 audio
 video
 main
+hpl
 *.o
 .deps
