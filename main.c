@@ -338,42 +338,41 @@ int main(int argc, const char *argv[]) {
     }
 
     if ((ret = init_input(context, argv[1])) < 0) {
-        fprintf(stderr, "ERROR: cannot initialize input\n");
-        return -1;
-    }
+        fprintf(stderr, "WARN: cannot initialize input\n");
+    } else {
+        if ((ret = init_video_codec(context)) < 0) {
+            fprintf(stderr, "ERROR: cannot initialize video codec\n");
+            return -1;
+        }
 
-    if ((ret = init_video_codec(context)) < 0) {
-        fprintf(stderr, "ERROR: cannot initialize video codec\n");
-        return -1;
+        if ((ret = init_video_scaler(context)) < 0) {
+            fprintf(stderr, "ERROR: cannot initialize video scaler\n");
+            return -1;
+        }
+
+        printf("video codec = %s\n", context->video_codec->name);
     }
 
     if ((ret = init_audio_codec(context)) < 0) {
-        fprintf(stderr, "ERROR: cannot initialize audio codec\n");
-        return -1;
+        fprintf(stderr, "WARNING: cannot initialize audio codec\n");
+    } else {
+        if ((ret = init_audio_resampler(context)) < 0) {
+            fprintf(stderr, "ERROR: cannot initialize audio resampler\n");
+            return -1;
+        }
+
+        if ((ret = init_audio_device(context)) < 0) {
+            fprintf(stderr, "ERROR: cannot initialize audio device\n");
+            return -1;
+        }
+
+        printf("audio codec = %s\n", context->audio_codec->name);
     }
 
     if ((ret = init_frames(context)) < 0) {
         fprintf(stderr, "ERROR: cannot initialize frames\n");
         return -1;
     }
-
-    if ((ret = init_audio_resampler(context)) < 0) {
-        fprintf(stderr, "ERROR: cannot initialize audio resampler\n");
-        return -1;
-    }
-
-    if ((ret = init_video_scaler(context)) < 0) {
-        fprintf(stderr, "ERROR: cannot initialize video scaler\n");
-        return -1;
-    }
-
-    if ((ret = init_audio_device(context)) < 0) {
-        fprintf(stderr, "ERROR: cannot initialize audio device\n");
-        return -1;
-    }
-
-    printf("video codec = %s\n", context->video_codec->name);
-    printf("audio codec = %s\n", context->audio_codec->name);
 
     int64_t its = av_gettime_relative();
     while (!glfwWindowShouldClose(context->window)) {
@@ -392,7 +391,7 @@ int main(int argc, const char *argv[]) {
             break;
         }
 
-        if (context->packet->stream_index == context->video_stream->index) {
+        if (context->video_stream && context->video_codec_context && context->packet->stream_index == context->video_stream->index) {
             if ((ret = avcodec_send_packet(context->video_codec_context, context->packet)) < 0) {
                 fprintf(stderr, "ERROR: cannot send packet to video codec. %s\n", av_err2str(ret));
                 break;
@@ -424,7 +423,7 @@ int main(int argc, const char *argv[]) {
             }
         }
 
-        if (context->packet->stream_index == context->audio_stream->index) {
+        if (context->audio_stream && context->audio_codec_context && context->packet->stream_index == context->audio_stream->index) {
             if ((ret = avcodec_send_packet(context->audio_codec_context, context->packet)) < 0) {
                 fprintf(stderr, "ERROR: cannot send packet to audio codec. %s\n", av_err2str(ret));
                 break;
@@ -468,16 +467,5 @@ int main(int argc, const char *argv[]) {
         av_packet_unref(context->packet);
     }
 
-    ma_device_uninit(&context->audio_device);
-    av_frame_free(&context->rgb_frame);
-    av_frame_free(&context->pcm_frame);
-    av_frame_free(&context->frame);
-    av_packet_free(&context->packet);
-    swr_free(&context->swr_context);
-    sws_freeContext(context->sws_context);
-    avcodec_free_context(&context->video_codec_context);
-    avcodec_free_context(&context->audio_codec_context);
-    avformat_close_input(&context->format_context);
-    free(context);
     return 0;
 }
