@@ -338,13 +338,18 @@ int main(int argc, const char *argv[]) {
     }
 
     if ((ret = init_input(context, argv[1])) < 0) {
-        fprintf(stderr, "WARN: cannot initialize input\n");
-    } else {
-        if ((ret = init_video_codec(context)) < 0) {
-            fprintf(stderr, "ERROR: cannot initialize video codec\n");
-            return -1;
-        }
+        fprintf(stderr, "ERROR: cannot initialize input\n");
+        return -1;
+    }
 
+    if ((ret = init_frames(context)) < 0) {
+        fprintf(stderr, "ERROR: cannot initialize frames\n");
+        return -1;
+    }
+
+    if ((ret = init_video_codec(context)) < 0) {
+        fprintf(stderr, "WARN: cannot initialize video codec\n");
+    } else {
         if ((ret = init_video_scaler(context)) < 0) {
             fprintf(stderr, "ERROR: cannot initialize video scaler\n");
             return -1;
@@ -367,11 +372,6 @@ int main(int argc, const char *argv[]) {
         }
 
         printf("audio codec = %s\n", context->audio_codec->name);
-    }
-
-    if ((ret = init_frames(context)) < 0) {
-        fprintf(stderr, "ERROR: cannot initialize frames\n");
-        return -1;
     }
 
     int64_t its = av_gettime_relative();
