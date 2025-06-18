@@ -16,7 +16,6 @@
 #include <unistd.h>
 
 typedef struct {
-    const char *url;
     AVFormatContext *format_context;
     const AVCodec *video_codec;
     const AVCodec *audio_codec;
@@ -35,39 +34,7 @@ typedef struct {
     GLFWwindow *window;
 } Context;
 
-void audio_callback_s16(ma_device *device, void *output, const void *input, ma_uint32 number_of_frames) {
-    (void)input;
-
-    static float phase = 0.0f;
-    float phase_increment = 2.0f * M_PI * (440.0f / 44100.0f);
-
-    int16_t *output_s16 = (int16_t *)output;
-    for (ma_uint32 i = 0; i < number_of_frames; i++) {
-        float sample_f32 = 0.2f * sinf(phase);
-        int16_t sample_s16 = (int16_t)(sample_f32 * 32767.0f);
-        *output_s16++ = sample_s16;
-        *output_s16++ = sample_s16;
-        phase = fmodf(phase + phase_increment, 2.0f * M_PI);
-    }
-}
-
-void audio_callback_f32_sine(ma_device *device, void *output, const void *input, ma_uint32 number_of_frames) {
-    (void)input;
-    int ret;
-
-    static float phase = 0.0f;
-    float phase_increment = 2.0f * M_PI * (440.0f / 44100.0f);
-
-    float *output_f32 = (float *)output;
-    for (ma_uint32 i = 0; i < number_of_frames; i++) {
-        float sample_f32 = 0.2 * sinf(phase);
-        *output_f32++ = sample_f32;
-        *output_f32++ = sample_f32;
-        phase = fmodf(phase + phase_increment, 2.0f * M_PI);
-    }
-}
-
-void audio_callback_f32(ma_device *device, void *output, const void *input, ma_uint32 number_of_frames) {
+void audio_callback(ma_device *device, void *output, const void *input, ma_uint32 number_of_frames) {
     (void)input;
     int ret;
 
@@ -131,13 +98,13 @@ int init_video_scaler(Context *context) {
     return 0;
 }
 
-int init_input(Context *context) {
+int init_input(Context *context, const char *url) {
     int ret;
     av_log_set_level(AV_LOG_DEBUG);
 
     AVDictionary *options = NULL;
 
-    if ((ret = avformat_open_input(&context->format_context, context->url, NULL, &options)) < 0) {
+    if ((ret = avformat_open_input(&context->format_context, url, NULL, &options)) < 0) {
         fprintf(stderr, "ERROR: cannot open input: %s\n", av_err2str(ret));
         return -1;
     }
@@ -237,7 +204,7 @@ int init_frames(Context *context) {
 int init_audio_device(Context *context) {
     int ret;
 
-    if ((ret = ma_rb_init(1024 * 1024, NULL, NULL, &context->rb)) != MA_SUCCESS) {
+    if ((ret = ma_rb_init(1024 * 1024 * 64, NULL, NULL, &context->rb)) != MA_SUCCESS) {
         fprintf(stderr, "ERROR: cannot initialize miniaudio ring buffer\n");
         return -1;
     }
@@ -246,7 +213,7 @@ int init_audio_device(Context *context) {
     config.playback.format = ma_format_f32;
     config.playback.channels = 2;
     config.sampleRate = 44100;
-    config.dataCallback = audio_callback_f32;
+    config.dataCallback = audio_callback;
     config.pUserData = &context->rb;
 
     if ((ret = ma_device_init(NULL, &config, &context->audio_device)) != MA_SUCCESS) {
@@ -296,24 +263,22 @@ int init_opengl(Context *context) {
     };
     // clang-format on
 
-    const char *vertex_shader_source = "#version 410\n"
-                                       "layout(location = 0) in vec2 position;\n"
-                                       "layout(location = 1) in vec2 texCoord;\n"
-                                       "\n"
-                                       "out vec2 TexCoord;\n"
-                                       "\n"
-                                       "void main() {\n"
-                                       "    gl_Position = vec4(position, 0.0, 1.0);\n"
-                                       "    TexCoord = texCoord;\n"
-                                       "}";
+    const char *vert_shader_source = "#version 410\n"
+                                     "layout(location = 0) in vec2 position;\n"
+                                     "layout(location = 1) in vec2 texCoord;\n"
+                                     "out vec2 TexCoord;\n"
+                                     "void main() {\n"
+                                     "    gl_Position = vec4(position, 0.0, 1.0);\n"
+                                     "    TexCoord = texCoord;\n"
+                                     "}";
 
-    const char *fragment_shader_source = "#version 410 core\n"
-                                         "in vec2 TexCoord;\n"
-                                         "uniform sampler2D Texture;\n"
-                                         "out vec4 Color;\n"
-                                         "void main() {\n"
-                                         "    Color = texture(Texture, TexCoord);\n"
-                                         "}";
+    const char *frag_shader_source = "#version 410 core\n"
+                                     "in vec2 TexCoord;\n"
+                                     "uniform sampler2D Texture;\n"
+                                     "out vec4 Color;\n"
+                                     "void main() {\n"
+                                     "    Color = texture(Texture, TexCoord);\n"
+                                     "}";
 
     GLuint VAO;
     glGenVertexArrays(1, &VAO);
@@ -340,11 +305,11 @@ int init_opengl(Context *context) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
     GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(vertex_shader, 1, &vertex_shader_source, NULL);
+    glShaderSource(vertex_shader, 1, &vert_shader_source, NULL);
     glCompileShader(vertex_shader);
 
     GLuint fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(fragment_shader, 1, &fragment_shader_source, NULL);
+    glShaderSource(fragment_shader, 1, &frag_shader_source, NULL);
     glCompileShader(fragment_shader);
 
     GLuint prog = glCreateProgram();
@@ -365,9 +330,7 @@ int main(int argc, const char *argv[]) {
     Context *context = (Context *)malloc(sizeof(Context));
     memset(context, 0, sizeof(Context));
 
-    context->url = argv[1];
-
-    if ((ret = init_input(context)) < 0) {
+    if ((ret = init_input(context, argv[1])) < 0) {
         fprintf(stderr, "ERROR: cannot initialize input\n");
         return -1;
     }
