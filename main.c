@@ -1,102 +1,294 @@
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/avutil.h>
+#include <libavutil/pixdesc.h>
 #include <libavutil/time.h>
+#include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
+
+#include "miniaudio.h"
 
 #define GLFW_INCLUDE_GLCOREARB
 #include <GLFW/glfw3.h>
 
-#include <stdio.h>
+#include <stdbool.h>
+#include <string.h>
+#include <unistd.h>
 
-int main(int argc, const char *argv[]) {
-    if (argc != 2) {
-        printf("USAGE: %s <url>\n", argv[0]);
-        return 1;
+typedef struct {
+    const char *url;
+    AVFormatContext *format_context;
+    const AVCodec *video_codec;
+    const AVCodec *audio_codec;
+    AVCodecContext *video_codec_context;
+    AVCodecContext *audio_codec_context;
+    AVStream *video_stream;
+    AVStream *audio_stream;
+    AVPacket *packet;
+    AVFrame *frame;
+    AVFrame *pcm_frame;
+    AVFrame *rgb_frame;
+    struct SwrContext *swr_context;
+    struct SwsContext *sws_context;
+    ma_device audio_device;
+    ma_rb rb;
+    GLFWwindow *window;
+} FFmpeg_Context;
+
+void audio_callback_s16(ma_device *device, void *output, const void *input, ma_uint32 number_of_frames) {
+    (void)input;
+
+    static float phase = 0.0f;
+    float phase_increment = 2.0f * M_PI * (440.0f / 44100.0f);
+
+    int16_t *output_s16 = (int16_t *)output;
+    for (ma_uint32 i = 0; i < number_of_frames; i++) {
+        float sample_f32 = 0.2f * sinf(phase);
+        int16_t sample_s16 = (int16_t)(sample_f32 * 32767.0f);
+        *output_s16++ = sample_s16;
+        *output_s16++ = sample_s16;
+        phase = fmodf(phase + phase_increment, 2.0f * M_PI);
     }
+}
 
+void audio_callback_f32_sine(ma_device *device, void *output, const void *input, ma_uint32 number_of_frames) {
+    (void)input;
     int ret;
 
-    av_log_set_level(AV_LOG_DEBUG);
-    AVFormatContext *format_context = NULL;
-    AVDictionary *options = NULL;
-    av_dict_set(&options, "protocol_whitelist", "tcp,rtmp", 0);
+    static float phase = 0.0f;
+    float phase_increment = 2.0f * M_PI * (440.0f / 44100.0f);
 
-    if ((ret = avformat_open_input(&format_context, argv[1], NULL, &options)) < 0) {
-        fprintf(stderr, "ERROR: cannot open input %s\n", av_err2str(ret));
-        return 1;
+    float *output_f32 = (float *)output;
+    for (ma_uint32 i = 0; i < number_of_frames; i++) {
+        float sample_f32 = 0.2 * sinf(phase);
+        *output_f32++ = sample_f32;
+        *output_f32++ = sample_f32;
+        phase = fmodf(phase + phase_increment, 2.0f * M_PI);
+    }
+}
+
+void audio_callback_f32(ma_device *device, void *output, const void *input, ma_uint32 number_of_frames) {
+    (void)input;
+    int ret;
+
+    ma_rb *rb = (ma_rb *)device->pUserData;
+    size_t bytes_to_read = number_of_frames * 2 * sizeof(float);
+    void *ptr;
+
+    if ((ret = ma_rb_acquire_read(rb, &bytes_to_read, &ptr)) != MA_SUCCESS) {
+        fprintf(stderr, "ERROR: cannot acquire miniaudio ring buffer for read: %s\n", ma_result_description(ret));
+        memset(output, 0, number_of_frames * 2 * sizeof(float));
+        return;
     }
 
-    if ((ret = avformat_find_stream_info(format_context, NULL)) < 0) {
-        fprintf(stderr, "ERROR: cannot read stream info %s\n", av_err2str(ret));
-        return 1;
+    if (bytes_to_read > 0) {
+        memcpy(output, ptr, bytes_to_read);
+        if (bytes_to_read < number_of_frames * 2 * sizeof(float)) {
+            memset((char *)output + bytes_to_read, 0, (number_of_frames * 2 * sizeof(float)) - bytes_to_read);
+        }
+
+        if ((ret = ma_rb_commit_read(rb, bytes_to_read)) != MA_SUCCESS) {
+            fprintf(stderr, "ERROR: cannot commit miniaudio ring buffer for read: %s\n", ma_result_description(ret));
+        }
+    } else {
+        memset(output, 0, number_of_frames * 2 * sizeof(float));
+    }
+}
+
+int init_audio_resampler(FFmpeg_Context *context) {
+    int ret;
+    const AVChannelLayout dst_ch_layout = AV_CHANNEL_LAYOUT_STEREO;
+    enum AVSampleFormat dst_sample_format = AV_SAMPLE_FMT_FLT;
+    int dst_sample_rate = 44100;
+
+    const AVChannelLayout src_ch_layout = context->audio_codec_context->ch_layout;
+    enum AVSampleFormat srt_sample_format = context->audio_codec_context->sample_fmt;
+    int src_sample_rate = context->audio_codec_context->sample_rate;
+
+    if ((ret = swr_alloc_set_opts2(&context->swr_context, &dst_ch_layout, dst_sample_format, dst_sample_rate, &src_ch_layout, srt_sample_format, src_sample_rate, 0, NULL)) < 0) {
+        fprintf(stderr, "ERROR: cannot allocate swr context: %s\n", av_err2str(ret));
+        return -1;
     }
 
-    AVPacket *packet = av_packet_alloc();
-    if (!packet) return 1;
-
-    AVFrame *frame0 = av_frame_alloc();
-    if (!frame0) return 1;
-
-    AVFrame *frame1 = av_frame_alloc();
-    if (!frame0) return 1;
-
-    // Video
-    const AVCodec *video_codec = NULL;
-    if ((ret = av_find_best_stream(format_context, AVMEDIA_TYPE_VIDEO, -1, -1, &video_codec, 0)) < 0) {
-        fprintf(stderr, "ERROR: cannot find video stream. %s\n", av_err2str(ret));
-        return 1;
+    if ((ret = swr_init(context->swr_context)) < 0) {
+        fprintf(stderr, "ERROR: cannot initialize swr context: %s\n", av_err2str(ret));
+        return -1;
     }
 
-    AVStream *video_stream = format_context->streams[ret];
-    AVCodecContext *video_codec_context = avcodec_alloc_context3(video_codec);
-    if ((ret = avcodec_parameters_to_context(video_codec_context, video_stream->codecpar)) < 0) {
-        fprintf(stderr, "ERROR: cannot copy stream codec parameters to codec context %s\n", av_err2str(ret));
-        return 1;
-    }
+    context->pcm_frame->ch_layout = dst_ch_layout;
+    context->pcm_frame->sample_rate = dst_sample_rate;
+    context->pcm_frame->format = dst_sample_format;
+    return 0;
+}
 
-    if ((ret = avcodec_open2(video_codec_context, video_codec, NULL)) < 0) {
-        fprintf(stderr, "ERROR: cannot open codec %s\n", av_err2str(ret));
-        return 1;
-    }
-
-    struct SwsContext *sws_ctx = sws_getContext(video_codec_context->width, video_codec_context->height, video_codec_context->pix_fmt, 1280, 720, AV_PIX_FMT_RGB24, SWS_BILINEAR, NULL, NULL, NULL);
-    if (!sws_ctx) {
+int init_video_scaler(FFmpeg_Context *context) {
+    context->sws_context = sws_getContext(context->video_codec_context->width, context->video_codec_context->height, context->video_codec_context->pix_fmt, context->video_codec_context->width, context->video_codec_context->height, AV_PIX_FMT_RGB24, SWS_BILINEAR, NULL, NULL, NULL);
+    if (!context->sws_context) {
         fprintf(stderr, "ERROR: cannot create software scaling context\n");
+        return -1;
     }
 
-    // Audio
-    const AVCodec *audio_codec = NULL;
-    if ((ret = av_find_best_stream(format_context, AVMEDIA_TYPE_AUDIO, -1, -1, &audio_codec, 0)) < 0) {
-        fprintf(stderr, "ERROR: cannot find audio stream. %s\n", av_err2str(ret));
-        return 1;
+    return 0;
+}
+
+int init_input(FFmpeg_Context *context) {
+    int ret;
+    av_log_set_level(AV_LOG_DEBUG);
+
+    AVDictionary *options = NULL;
+    av_dict_set(&options, "rtmp_live", "live", 0);
+    av_dict_set(&options, "rtmp_buffer", "1000", 0);
+
+    if ((ret = avformat_open_input(&context->format_context, context->url, NULL, &options)) < 0) {
+        fprintf(stderr, "ERROR: cannot open input: %s\n", av_err2str(ret));
+        return -1;
     }
 
-    AVStream *audio_stream = format_context->streams[ret];
-    AVCodecContext *audio_codec_context = avcodec_alloc_context3(audio_codec);
-    if ((ret = avcodec_parameters_to_context(audio_codec_context, audio_stream->codecpar)) < 0) {
-        fprintf(stderr, "ERROR: cannot copy stream codec parameters to codec context %s\n", av_err2str(ret));
-        return 1;
+    context->format_context->probesize = 32 * 1024;
+    context->format_context->max_analyze_duration = AV_TIME_BASE / 4;
+    if ((ret = avformat_find_stream_info(context->format_context, NULL)) < 0) {
+        fprintf(stderr, "ERROR: cannot find stream info: %s\n", av_err2str(ret));
+        return -1;
     }
 
-    if ((ret = avcodec_open2(audio_codec_context, audio_codec, NULL)) < 0) {
-        fprintf(stderr, "ERROR: cannot open codec %s\n", av_err2str(ret));
-        return 1;
+    printf("bitrate = %lld\n", context->format_context->bit_rate);
+
+    return 0;
+}
+
+int init_video_codec(FFmpeg_Context *context) {
+    int ret;
+
+    if ((ret = av_find_best_stream(context->format_context, AVMEDIA_TYPE_VIDEO, -1, -1, &context->video_codec, 0)) < 0) {
+        fprintf(stderr, "ERROR: cannot find video stream: %s\n", av_err2str(ret));
+        return -1;
     }
 
-    int64_t its = av_gettime_relative();
+    context->video_stream = context->format_context->streams[ret];
+    context->video_codec_context = avcodec_alloc_context3(context->video_codec);
+    if (!context->video_codec_context) {
+        fprintf(stderr, "ERROR: cannot allocate video codec context\n");
+        return -1;
+    }
 
+    if ((ret = avcodec_parameters_to_context(context->video_codec_context, context->video_stream->codecpar)) < 0) {
+        fprintf(stderr, "ERROR: cannot copy video codec parameters: %s\n", av_err2str(ret));
+        return -1;
+    }
+
+    if ((ret = avcodec_open2(context->video_codec_context, context->video_codec, NULL)) < 0) {
+        fprintf(stderr, "ERROR: cannot open video codec: %s\n", av_err2str(ret));
+        return -1;
+    }
+
+    return 0;
+}
+
+int init_audio_codec(FFmpeg_Context *context) {
+    int ret;
+
+    if ((ret = av_find_best_stream(context->format_context, AVMEDIA_TYPE_AUDIO, -1, -1, &context->audio_codec, 0)) < 0) {
+        fprintf(stderr, "ERROR: cannot find audio stream: %s\n", av_err2str(ret));
+        return -1;
+    }
+
+    context->audio_stream = context->format_context->streams[ret];
+    context->audio_codec_context = avcodec_alloc_context3(context->audio_codec);
+    if (!context->audio_codec_context) {
+        fprintf(stderr, "ERROR: cannot allocate audio codec context\n");
+        return -1;
+    }
+
+    if ((ret = avcodec_parameters_to_context(context->audio_codec_context, context->audio_stream->codecpar)) < 0) {
+        fprintf(stderr, "ERROR: cannot copy audio codec parameters: %s\n", av_err2str(ret));
+        return -1;
+    }
+
+    if ((ret = avcodec_open2(context->audio_codec_context, context->audio_codec, NULL)) < 0) {
+        fprintf(stderr, "ERROR: cannot open audio codec: %s\n", av_err2str(ret));
+        return -1;
+    }
+
+    return 0;
+}
+
+int init_frames(FFmpeg_Context *context) {
+    context->packet = av_packet_alloc();
+    if (!context->packet) {
+        fprintf(stderr, "ERROR: cannot allocate packet\n");
+        return -1;
+    }
+
+    context->frame = av_frame_alloc();
+    if (!context->frame) {
+        fprintf(stderr, "ERROR: cannot allocate frame\n");
+        return -1;
+    }
+
+    context->pcm_frame = av_frame_alloc();
+    if (!context->pcm_frame) {
+        fprintf(stderr, "ERROR: cannot allocate pcm frame\n");
+        return -1;
+    }
+
+    context->rgb_frame = av_frame_alloc();
+    if (!context->rgb_frame) {
+        fprintf(stderr, "ERROR: cannot allocate rgb frame\n");
+        return -1;
+    }
+
+    return 0;
+}
+
+int init_audio_device(FFmpeg_Context *context) {
+    int ret;
+
+    if ((ret = ma_rb_init(1024 * 1024 * 12, NULL, NULL, &context->rb)) != MA_SUCCESS) {
+        fprintf(stderr, "ERROR: cannot initialize miniaudio ring buffer\n");
+        return -1;
+    }
+
+    ma_device_config config = ma_device_config_init(ma_device_type_playback);
+    config.playback.format = ma_format_f32;
+    config.playback.channels = 2;
+    config.sampleRate = 44100;
+    config.dataCallback = audio_callback_f32;
+    config.pUserData = &context->rb;
+
+    if ((ret = ma_device_init(NULL, &config, &context->audio_device)) != MA_SUCCESS) {
+        fprintf(stderr, "ERROR: cannot initialize miniaudio device\n");
+        return -1;
+    }
+
+    if ((ret = ma_device_start(&context->audio_device)) != MA_SUCCESS) {
+        fprintf(stderr, "ERROR: cannot start miniaudio device\n");
+        return -1;
+    }
+
+    return 0;
+}
+
+int init_window(FFmpeg_Context *context) {
     glfwInit();
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
-    GLFWwindow *window = glfwCreateWindow(1280, 720, "WINDOW", NULL, NULL);
-    glfwSetWindowSizeLimits(window, 480, 270, GLFW_DONT_CARE, GLFW_DONT_CARE);
-    glfwSetWindowAspectRatio(window, 1280, 720);
-    glfwMakeContextCurrent(window);
+
+    int width = context->video_codec_context->width; 
+    int height = context->video_codec_context->height;
+    context->window = glfwCreateWindow(width, height, "Window", NULL, NULL);
+    if (!context->window) {
+        fprintf(stderr, "ERROR: cannot initialize glfw window\n");
+        return -1;
+    }
+
+    glfwMakeContextCurrent(context->window);
     glClearColor(0, 0, 0, 1);
+    return 0;
+}
 
-
+int init_opengl(FFmpeg_Context *context) {
     // clang-format off
     GLfloat vertices[] = {
         -1.0, -1.0, +0.0, +1.0,
@@ -110,24 +302,24 @@ int main(int argc, const char *argv[]) {
     };
     // clang-format on
 
-    static const char *vertex_shader_source = "#version 410\n"
-                                              "layout(location = 0) in vec2 position;\n"
-                                              "layout(location = 1) in vec2 texCoord;\n"
-                                              "\n"
-                                              "out vec2 TexCoord;\n"
-                                              "\n"
-                                              "void main() {\n"
-                                              "    gl_Position = vec4(position, 0.0, 1.0);\n"
-                                              "    TexCoord = texCoord;\n"
-                                              "}";
+    const char *vertex_shader_source = "#version 410\n"
+                                       "layout(location = 0) in vec2 position;\n"
+                                       "layout(location = 1) in vec2 texCoord;\n"
+                                       "\n"
+                                       "out vec2 TexCoord;\n"
+                                       "\n"
+                                       "void main() {\n"
+                                       "    gl_Position = vec4(position, 0.0, 1.0);\n"
+                                       "    TexCoord = texCoord;\n"
+                                       "}";
 
-    static const char *fragment_shader_source = "#version 410 core\n"
-                                                "in vec2 TexCoord;\n"
-                                                "uniform sampler2D Texture;\n"
-                                                "out vec4 Color;\n"
-                                                "void main() {\n"
-                                                "    Color = texture(Texture, TexCoord);\n"
-                                                "}";
+    const char *fragment_shader_source = "#version 410 core\n"
+                                         "in vec2 TexCoord;\n"
+                                         "uniform sampler2D Texture;\n"
+                                         "out vec4 Color;\n"
+                                         "void main() {\n"
+                                         "    Color = texture(Texture, TexCoord);\n"
+                                         "}";
 
     GLuint VAO;
     glGenVertexArrays(1, &VAO);
@@ -166,60 +358,170 @@ int main(int argc, const char *argv[]) {
     glAttachShader(prog, fragment_shader);
     glLinkProgram(prog);
     glUseProgram(prog);
+    return 0;
+}
 
+int main(int argc, const char *argv[]) {
+    if (argc != 2) {
+        fprintf(stderr, "USAGE: %s <url>\n", argv[0]);
+        return -1;
+    }
 
-    while (!glfwWindowShouldClose(window)) {
-        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) {
-            break;
-        }
+    int ret;
+    FFmpeg_Context *context = (FFmpeg_Context *)malloc(sizeof(FFmpeg_Context));
+    context->url = argv[1];
 
-        ret = av_read_frame(format_context, packet);
+    if ((ret = init_input(context)) < 0) {
+        fprintf(stderr, "ERROR: cannot initialize input\n");
+        return -1;
+    }
+
+    if ((ret = init_video_codec(context)) < 0) {
+        fprintf(stderr, "ERROR: cannot initialize video codec\n");
+        return -1;
+    }
+
+    if ((ret = init_audio_codec(context)) < 0) {
+        fprintf(stderr, "ERROR: cannot initialize audio codec\n");
+        return -1;
+    }
+
+    if ((ret = init_frames(context)) < 0) {
+        fprintf(stderr, "ERROR: cannot initialize frames\n");
+        return -1;
+    }
+
+    if ((ret = init_audio_resampler(context)) < 0) {
+        fprintf(stderr, "ERROR: cannot initialize audio resampler\n");
+        return -1;
+    }
+
+    if ((ret = init_video_scaler(context)) < 0) {
+        fprintf(stderr, "ERROR: cannot initialize video scaler\n");
+        return -1;
+    }
+
+    if ((ret = init_audio_device(context)) < 0) {
+        fprintf(stderr, "ERROR: cannot initialize audio device\n");
+        return -1;
+    }
+
+    if ((ret = init_window(context)) < 0) {
+        fprintf(stderr, "ERROR: cannot initialize window\n");
+        return -1;
+    }
+
+    if ((ret = init_opengl(context)) < 0) {
+        fprintf(stderr, "ERROR: cannot initialize opengl\n");
+        return -1;
+    }
+
+    printf("video codec = %s\n", context->video_codec->name);
+    printf("audio codec = %s\n", context->audio_codec->name);
+
+    int64_t its = av_gettime_relative();
+    while (!glfwWindowShouldClose(context->window)) {
+        ret = av_read_frame(context->format_context, context->packet);
         if (ret == AVERROR_EOF) {
             break;
         }
 
         if (ret == AVERROR(EAGAIN)) {
-            av_packet_unref(packet);
+            av_packet_unref(context->packet);
             continue;
         }
 
-        if (video_codec_context && packet->stream_index == video_stream->index && avcodec_send_packet(video_codec_context, packet) == 0) {
-            while (avcodec_receive_frame(video_codec_context, frame0) == 0) {
-                if ((ret = sws_scale_frame(sws_ctx, frame1, frame0)) < 0) {
-                    fprintf(stderr, "ERROR: sws_scale_frame %s\n", av_err2str(ret));
-                    return 1;
+        if (ret < 0) {
+            fprintf(stderr, "ERROR: cannot read packet from input. %s\n", av_err2str(ret));
+            break;
+        }
+
+        if (context->packet->stream_index == context->video_stream->index) {
+            if ((ret = avcodec_send_packet(context->video_codec_context, context->packet)) < 0) {
+                fprintf(stderr, "ERROR: cannot send packet to video codec. %s\n", av_err2str(ret));
+                break;
+            }
+
+            while (ret >= 0) {
+                ret = avcodec_receive_frame(context->video_codec_context, context->frame);
+                if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+                    break;
+                } else if (ret < 0) {
+                    fprintf(stderr, "ERROR: cannot receive frame from video codec. %s\n", av_err2str(ret));
+                    break;
                 }
 
-                int64_t fts = (1e6 * frame0->pts * video_stream->time_base.num) / video_stream->time_base.den;
+                int64_t fts = (1e6 * context->frame->pts * context->video_stream->time_base.num) / context->video_stream->time_base.den;
                 int64_t rts = av_gettime_relative() - its;
                 if (fts > rts) {
                     av_usleep(fts - rts);
+                }
+
+                if ((ret = sws_scale_frame(context->sws_context, context->rgb_frame, context->frame)) < 0) {
+                    fprintf(stderr, "ERROR: cannot convert frame to rgb frame. %s\n", av_err2str(ret));
+                    return -1;
                 }
 
                 glClear(GL_COLOR_BUFFER_BIT);
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, frame1->width, frame1->height, 0, GL_RGB, GL_UNSIGNED_BYTE, frame1->data[0]);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, context->rgb_frame->width, context->rgb_frame->height, 0, GL_RGB, GL_UNSIGNED_BYTE, context->rgb_frame->data[0]);
                 glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
-                glfwSwapBuffers(window);
+                glfwSwapBuffers(context->window);
                 glfwPollEvents();
-
-                printf("Video Frame %lld %s...\n", video_codec_context->frame_num, video_codec->name);
             }
         }
 
-        if (audio_codec_context && packet->stream_index == audio_stream->index && avcodec_send_packet(audio_codec_context, packet) == 0) {
-            while (avcodec_receive_frame(audio_codec_context, frame0) == 0) {
-                int64_t fts = 1000 * 1000 * frame0->pts * audio_stream->time_base.num / audio_stream->time_base.den;
-                int64_t rts = av_gettime_relative() - its;
-                if (fts > rts) {
-                    av_usleep(fts - rts);
+        if (context->packet->stream_index == context->audio_stream->index) {
+            if ((ret = avcodec_send_packet(context->audio_codec_context, context->packet)) < 0) {
+                fprintf(stderr, "ERROR: cannot send packet to audio codec. %s\n", av_err2str(ret));
+                break;
+            }
+
+            while (ret >= 0) {
+                ret = avcodec_receive_frame(context->audio_codec_context, context->frame);
+                if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+                    break;
+                } else if (ret < 0) {
+                    fprintf(stderr, "ERROR: cannot receive frame from audio codec. %s\n", av_err2str(ret));
+                    break;
                 }
 
-                printf("Audio Frame %lld %s...\n", audio_codec_context->frame_num, audio_codec->name);
+                int dst_nb_samples = av_rescale_rnd(context->frame->nb_samples, context->pcm_frame->sample_rate, context->audio_codec_context->sample_rate, AV_ROUND_UP);
+                context->pcm_frame->nb_samples = dst_nb_samples;
+
+                if ((ret = swr_convert_frame(context->swr_context, context->pcm_frame, context->frame)) < 0) {
+                    fprintf(stderr, "ERROR: cannot resample frame: %s\n", av_err2str(ret));
+                    break;
+                }
+
+                size_t bytes_to_write = context->pcm_frame->nb_samples * 2 * sizeof(float);
+                void *ptr;
+                if ((ret = ma_rb_acquire_write(&context->rb, &bytes_to_write, &ptr)) != MA_SUCCESS) {
+                    fprintf(stderr, "ERROR: cannot acquire miniaudio ring buffer for write: %s\n", ma_result_description(ret));
+                    continue;
+                }
+
+                if (bytes_to_write > 0) {
+                    memcpy(ptr, context->pcm_frame->data[0], bytes_to_write);
+                    if ((ret = ma_rb_commit_write(&context->rb, bytes_to_write)) != MA_SUCCESS) {
+                        fprintf(stderr, "ERROR: cannot commit miniaudio ring buffer for write: %s\n", ma_result_description(ret));
+                    }
+                }
             }
         }
 
-        av_packet_unref(packet);
+        av_packet_unref(context->packet);
     }
 
+    ma_device_uninit(&context->audio_device);
+    av_frame_free(&context->rgb_frame);
+    av_frame_free(&context->pcm_frame);
+    av_frame_free(&context->frame);
+    av_packet_free(&context->packet);
+    swr_free(&context->swr_context);
+    sws_freeContext(context->sws_context);
+    avcodec_free_context(&context->video_codec_context);
+    avcodec_free_context(&context->audio_codec_context);
+    avformat_close_input(&context->format_context);
+    free(context);
     return 0;
 }
