@@ -33,7 +33,7 @@ typedef struct {
     ma_device audio_device;
     ma_rb rb;
     GLFWwindow *window;
-} FFmpeg_Context;
+} Context;
 
 void audio_callback_s16(ma_device *device, void *output, const void *input, ma_uint32 number_of_frames) {
     (void)input;
@@ -95,7 +95,7 @@ void audio_callback_f32(ma_device *device, void *output, const void *input, ma_u
     }
 }
 
-int init_audio_resampler(FFmpeg_Context *context) {
+int init_audio_resampler(Context *context) {
     int ret;
     const AVChannelLayout dst_ch_layout = AV_CHANNEL_LAYOUT_STEREO;
     enum AVSampleFormat dst_sample_format = AV_SAMPLE_FMT_FLT;
@@ -121,7 +121,7 @@ int init_audio_resampler(FFmpeg_Context *context) {
     return 0;
 }
 
-int init_video_scaler(FFmpeg_Context *context) {
+int init_video_scaler(Context *context) {
     context->sws_context = sws_getContext(context->video_codec_context->width, context->video_codec_context->height, context->video_codec_context->pix_fmt, context->video_codec_context->width, context->video_codec_context->height, AV_PIX_FMT_RGB24, SWS_BILINEAR, NULL, NULL, NULL);
     if (!context->sws_context) {
         fprintf(stderr, "ERROR: cannot create software scaling context\n");
@@ -131,7 +131,7 @@ int init_video_scaler(FFmpeg_Context *context) {
     return 0;
 }
 
-int init_input(FFmpeg_Context *context) {
+int init_input(Context *context) {
     int ret;
     av_log_set_level(AV_LOG_DEBUG);
 
@@ -156,7 +156,7 @@ int init_input(FFmpeg_Context *context) {
     return 0;
 }
 
-int init_video_codec(FFmpeg_Context *context) {
+int init_video_codec(Context *context) {
     int ret;
 
     if ((ret = av_find_best_stream(context->format_context, AVMEDIA_TYPE_VIDEO, -1, -1, &context->video_codec, 0)) < 0) {
@@ -184,7 +184,7 @@ int init_video_codec(FFmpeg_Context *context) {
     return 0;
 }
 
-int init_audio_codec(FFmpeg_Context *context) {
+int init_audio_codec(Context *context) {
     int ret;
 
     if ((ret = av_find_best_stream(context->format_context, AVMEDIA_TYPE_AUDIO, -1, -1, &context->audio_codec, 0)) < 0) {
@@ -212,7 +212,7 @@ int init_audio_codec(FFmpeg_Context *context) {
     return 0;
 }
 
-int init_frames(FFmpeg_Context *context) {
+int init_frames(Context *context) {
     context->packet = av_packet_alloc();
     if (!context->packet) {
         fprintf(stderr, "ERROR: cannot allocate packet\n");
@@ -240,7 +240,7 @@ int init_frames(FFmpeg_Context *context) {
     return 0;
 }
 
-int init_audio_device(FFmpeg_Context *context) {
+int init_audio_device(Context *context) {
     int ret;
 
     if ((ret = ma_rb_init(1024 * 1024 * 12, NULL, NULL, &context->rb)) != MA_SUCCESS) {
@@ -268,7 +268,7 @@ int init_audio_device(FFmpeg_Context *context) {
     return 0;
 }
 
-int init_window(FFmpeg_Context *context) {
+int init_window(Context *context) {
     glfwInit();
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
@@ -288,7 +288,7 @@ int init_window(FFmpeg_Context *context) {
     return 0;
 }
 
-int init_opengl(FFmpeg_Context *context) {
+int init_opengl(Context *context) {
     // clang-format off
     GLfloat vertices[] = {
         -1.0, -1.0, +0.0, +1.0,
@@ -368,7 +368,7 @@ int main(int argc, const char *argv[]) {
     }
 
     int ret;
-    FFmpeg_Context *context = (FFmpeg_Context *)malloc(sizeof(FFmpeg_Context));
+    Context *context = (Context *)malloc(sizeof(Context));
     context->url = argv[1];
 
     if ((ret = init_input(context)) < 0) {
