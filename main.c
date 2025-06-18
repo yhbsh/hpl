@@ -243,7 +243,7 @@ int init_frames(Context *context) {
 int init_audio_device(Context *context) {
     int ret;
 
-    if ((ret = ma_rb_init(1024 * 1024 * 12, NULL, NULL, &context->rb)) != MA_SUCCESS) {
+    if ((ret = ma_rb_init(1024 * 1024, NULL, NULL, &context->rb)) != MA_SUCCESS) {
         fprintf(stderr, "ERROR: cannot initialize miniaudio ring buffer\n");
         return -1;
     }
@@ -369,6 +369,8 @@ int main(int argc, const char *argv[]) {
 
     int ret;
     Context *context = (Context *)malloc(sizeof(Context));
+    memset(context, 0, sizeof(Context));
+
     context->url = argv[1];
 
     if ((ret = init_input(context)) < 0) {
@@ -453,9 +455,7 @@ int main(int argc, const char *argv[]) {
 
                 int64_t fts = (1e6 * context->frame->pts * context->video_stream->time_base.num) / context->video_stream->time_base.den;
                 int64_t rts = av_gettime_relative() - its;
-                if (fts > rts) {
-                    av_usleep(fts - rts);
-                }
+                if (fts > rts) av_usleep(fts - rts);
 
                 if ((ret = sws_scale_frame(context->sws_context, context->rgb_frame, context->frame)) < 0) {
                     fprintf(stderr, "ERROR: cannot convert frame to rgb frame. %s\n", av_err2str(ret));
@@ -505,6 +505,8 @@ int main(int argc, const char *argv[]) {
                     if ((ret = ma_rb_commit_write(&context->rb, bytes_to_write)) != MA_SUCCESS) {
                         fprintf(stderr, "ERROR: cannot commit miniaudio ring buffer for write: %s\n", ma_result_description(ret));
                     }
+                } else {
+                    ma_rb_commit_write(&context->rb, 0);
                 }
             }
         }
