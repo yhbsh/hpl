@@ -31,6 +31,7 @@ typedef struct {
     ma_device audio_device;
     ma_rb rb;
     GLFWwindow *window;
+    int64_t its;
 } Context;
 
 void audio_callback(ma_device *device, void *output, const void *input, ma_uint32 number_of_frames) {
@@ -229,6 +230,8 @@ int init_audio_device(Context *context) {
 }
 
 int init_window(Context *context) {
+    context->its = av_gettime_relative();
+
     glfwInit();
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
@@ -317,6 +320,92 @@ int init_opengl(Context *context) {
     return 0;
 }
 
+int video_decode_render(Context *context) {
+    if (!context->video_stream || !context->video_codec_context || context->packet->stream_index != context->video_stream->index) {
+        return 0;
+    }
+
+    int ret;
+    if ((ret = avcodec_send_packet(context->video_codec_context, context->packet)) < 0) {
+        fprintf(stderr, "ERROR: cannot send packet to video codec. %s\n", av_err2str(ret));
+        return -1;
+    }
+
+    while (ret >= 0) {
+        ret = avcodec_receive_frame(context->video_codec_context, context->frame);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+            break;
+        } else if (ret < 0) {
+            fprintf(stderr, "ERROR: cannot receive frame from video codec. %s\n", av_err2str(ret));
+            return -1;
+        }
+
+        int64_t fts = (1e6 * context->frame->pts * context->video_stream->time_base.num) / context->video_stream->time_base.den;
+        int64_t rts = av_gettime_relative() - context->its;
+        if (fts > rts) av_usleep(fts - rts);
+
+        if ((ret = sws_scale_frame(context->sws_context, context->rgb_frame, context->frame)) < 0) {
+            fprintf(stderr, "ERROR: cannot convert frame to rgb frame. %s\n", av_err2str(ret));
+            return -1;
+        }
+
+        glClear(GL_COLOR_BUFFER_BIT);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, context->rgb_frame->width, context->rgb_frame->height, 0, GL_RGB, GL_UNSIGNED_BYTE, context->rgb_frame->data[0]);
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+        glfwSwapBuffers(context->window);
+        glfwPollEvents();
+    }
+
+    return 0;
+}
+
+int audio_decode_render(Context *context) {
+    if (!context->audio_stream || !context->audio_codec_context || context->packet->stream_index != context->audio_stream->index) {
+        return 0;
+    }
+
+    int ret;
+    if ((ret = avcodec_send_packet(context->audio_codec_context, context->packet)) < 0) {
+        fprintf(stderr, "ERROR: cannot send packet to audio codec. %s\n", av_err2str(ret));
+        return -1;
+    }
+
+    while (ret >= 0) {
+        ret = avcodec_receive_frame(context->audio_codec_context, context->frame);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+            break;
+        } else if (ret < 0) {
+            fprintf(stderr, "ERROR: cannot receive frame from audio codec. %s\n", av_err2str(ret));
+            return -1;
+        }
+
+        int dst_nb_samples = av_rescale_rnd(context->frame->nb_samples, context->pcm_frame->sample_rate, context->audio_codec_context->sample_rate, AV_ROUND_UP);
+        context->pcm_frame->nb_samples = dst_nb_samples;
+
+        if ((ret = swr_convert_frame(context->swr_context, context->pcm_frame, context->frame)) < 0) {
+            fprintf(stderr, "ERROR: cannot resample frame: %s\n", av_err2str(ret));
+            return -1;
+        }
+
+        size_t bytes_to_write = context->pcm_frame->nb_samples * 2 * sizeof(float);
+        void *ptr;
+        if ((ret = ma_rb_acquire_write(&context->rb, &bytes_to_write, &ptr)) != MA_SUCCESS) {
+            fprintf(stderr, "ERROR: cannot acquire miniaudio ring buffer for write: %s\n", ma_result_description(ret));
+            continue;
+        }
+
+        if (bytes_to_write > 0) {
+            memcpy(ptr, context->pcm_frame->data[0], bytes_to_write);
+            if ((ret = ma_rb_commit_write(&context->rb, bytes_to_write)) != MA_SUCCESS) {
+                fprintf(stderr, "ERROR: cannot commit miniaudio ring buffer for write: %s\n", ma_result_description(ret));
+            }
+        } else {
+            ma_rb_commit_write(&context->rb, 0);
+        }
+    }
+    return 0;
+}
+
 int main(int argc, const char *argv[]) {
     if (argc != 2) {
         fprintf(stderr, "USAGE: %s <url>\n", argv[0]);
@@ -324,6 +413,7 @@ int main(int argc, const char *argv[]) {
     }
 
     int ret;
+
     Context *context = (Context *)malloc(sizeof(Context));
     memset(context, 0, sizeof(Context));
 
@@ -374,94 +464,18 @@ int main(int argc, const char *argv[]) {
         printf("audio codec = %s\n", context->audio_codec->name);
     }
 
-    int64_t its = av_gettime_relative();
     while (!glfwWindowShouldClose(context->window)) {
-        ret = av_read_frame(context->format_context, context->packet);
+        if ((ret = av_read_frame(context->format_context, context->packet)) < 0) {
+            fprintf(stderr, "ERROR: cannot read packet. %s\n", av_err2str(ret));
+            return -1;
+        }
+
         if (ret == AVERROR_EOF) {
             break;
         }
 
-        if (ret == AVERROR(EAGAIN)) {
-            av_packet_unref(context->packet);
-            continue;
-        }
-
-        if (ret < 0) {
-            fprintf(stderr, "ERROR: cannot read packet from input. %s\n", av_err2str(ret));
-            break;
-        }
-
-        if (context->video_stream && context->video_codec_context && context->packet->stream_index == context->video_stream->index) {
-            if ((ret = avcodec_send_packet(context->video_codec_context, context->packet)) < 0) {
-                fprintf(stderr, "ERROR: cannot send packet to video codec. %s\n", av_err2str(ret));
-                break;
-            }
-
-            while (ret >= 0) {
-                ret = avcodec_receive_frame(context->video_codec_context, context->frame);
-                if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
-                    break;
-                } else if (ret < 0) {
-                    fprintf(stderr, "ERROR: cannot receive frame from video codec. %s\n", av_err2str(ret));
-                    break;
-                }
-
-                int64_t fts = (1e6 * context->frame->pts * context->video_stream->time_base.num) / context->video_stream->time_base.den;
-                int64_t rts = av_gettime_relative() - its;
-                if (fts > rts) av_usleep(fts - rts);
-
-                if ((ret = sws_scale_frame(context->sws_context, context->rgb_frame, context->frame)) < 0) {
-                    fprintf(stderr, "ERROR: cannot convert frame to rgb frame. %s\n", av_err2str(ret));
-                    return -1;
-                }
-
-                glClear(GL_COLOR_BUFFER_BIT);
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, context->rgb_frame->width, context->rgb_frame->height, 0, GL_RGB, GL_UNSIGNED_BYTE, context->rgb_frame->data[0]);
-                glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
-                glfwSwapBuffers(context->window);
-                glfwPollEvents();
-            }
-        }
-
-        if (context->audio_stream && context->audio_codec_context && context->packet->stream_index == context->audio_stream->index) {
-            if ((ret = avcodec_send_packet(context->audio_codec_context, context->packet)) < 0) {
-                fprintf(stderr, "ERROR: cannot send packet to audio codec. %s\n", av_err2str(ret));
-                break;
-            }
-
-            while (ret >= 0) {
-                ret = avcodec_receive_frame(context->audio_codec_context, context->frame);
-                if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
-                    break;
-                } else if (ret < 0) {
-                    fprintf(stderr, "ERROR: cannot receive frame from audio codec. %s\n", av_err2str(ret));
-                    break;
-                }
-
-                int dst_nb_samples = av_rescale_rnd(context->frame->nb_samples, context->pcm_frame->sample_rate, context->audio_codec_context->sample_rate, AV_ROUND_UP);
-                context->pcm_frame->nb_samples = dst_nb_samples;
-
-                if ((ret = swr_convert_frame(context->swr_context, context->pcm_frame, context->frame)) < 0) {
-                    fprintf(stderr, "ERROR: cannot resample frame: %s\n", av_err2str(ret));
-                    break;
-                }
-
-                size_t bytes_to_write = context->pcm_frame->nb_samples * 2 * sizeof(float);
-                void *ptr;
-                if ((ret = ma_rb_acquire_write(&context->rb, &bytes_to_write, &ptr)) != MA_SUCCESS) {
-                    fprintf(stderr, "ERROR: cannot acquire miniaudio ring buffer for write: %s\n", ma_result_description(ret));
-                    continue;
-                }
-
-                if (bytes_to_write > 0) {
-                    memcpy(ptr, context->pcm_frame->data[0], bytes_to_write);
-                    if ((ret = ma_rb_commit_write(&context->rb, bytes_to_write)) != MA_SUCCESS) {
-                        fprintf(stderr, "ERROR: cannot commit miniaudio ring buffer for write: %s\n", ma_result_description(ret));
-                    }
-                } else {
-                    ma_rb_commit_write(&context->rb, 0);
-                }
-            }
+        if (((ret = video_decode_render(context)) < 0) || ((ret = audio_decode_render(context)) < 0)) {
+            return -1;
         }
 
         av_packet_unref(context->packet);
