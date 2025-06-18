@@ -136,22 +136,16 @@ int init_input(Context *context) {
     av_log_set_level(AV_LOG_DEBUG);
 
     AVDictionary *options = NULL;
-    av_dict_set(&options, "rtmp_live", "live", 0);
-    av_dict_set(&options, "rtmp_buffer", "1000", 0);
 
     if ((ret = avformat_open_input(&context->format_context, context->url, NULL, &options)) < 0) {
         fprintf(stderr, "ERROR: cannot open input: %s\n", av_err2str(ret));
         return -1;
     }
 
-    context->format_context->probesize = 32 * 1024;
-    context->format_context->max_analyze_duration = AV_TIME_BASE / 4;
     if ((ret = avformat_find_stream_info(context->format_context, NULL)) < 0) {
         fprintf(stderr, "ERROR: cannot find stream info: %s\n", av_err2str(ret));
         return -1;
     }
-
-    printf("bitrate = %lld\n", context->format_context->bit_rate);
 
     return 0;
 }
