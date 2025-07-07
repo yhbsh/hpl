@@ -444,8 +444,6 @@ int main(int argc, const char *argv[]) {
             fprintf(stderr, "ERROR: cannot initialize video scaler\n");
             return -1;
         }
-
-        printf("video codec = %s\n", context->video_codec->name);
     }
 
     if ((ret = init_audio_codec(context)) < 0) {
@@ -461,8 +459,10 @@ int main(int argc, const char *argv[]) {
             return -1;
         }
 
-        printf("audio codec = %s\n", context->audio_codec->name);
     }
+
+    printf("video codec = %s\n", context->video_codec->name);
+    printf("audio codec = %s\n", context->audio_codec->name);
 
     while (!glfwWindowShouldClose(context->window)) {
         if ((ret = av_read_frame(context->format_context, context->packet)) < 0) {
