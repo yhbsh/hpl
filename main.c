@@ -121,7 +121,7 @@ int init_video_codec(Context *context) {
     int ret;
 
     if ((ret = av_find_best_stream(context->format_context, AVMEDIA_TYPE_VIDEO, -1, -1, &context->video_codec, 0)) < 0) {
-        fprintf(stderr, "ERROR: cannot find video stream: %s\n", av_err2str(ret));
+        fprintf(stderr, "WARN: cannot find video stream: %s\n", av_err2str(ret));
         return -1;
     }
 
@@ -149,7 +149,7 @@ int init_audio_codec(Context *context) {
     int ret;
 
     if ((ret = av_find_best_stream(context->format_context, AVMEDIA_TYPE_AUDIO, -1, -1, &context->audio_codec, 0)) < 0) {
-        fprintf(stderr, "ERROR: cannot find audio stream: %s\n", av_err2str(ret));
+        fprintf(stderr, "WARN: cannot find audio stream: %s\n", av_err2str(ret));
         return -1;
     }
 
