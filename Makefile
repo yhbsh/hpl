@@ -4,7 +4,7 @@ BINDIR := $(PREFIX)/bin
 default: hpl
 
 hpl: main.c
-	clang -O3 -DGLFW_INCLUDE_GLCOREARB -DMINIAUDIO_IMPLEMENTATION -DGL_SILENCE_DEPRECATION -o hpl main.c $(shell pkg-config --cflags --libs libavformat libavcodec libswscale glfw3) -framework OpenGL
+	clang -o hpl main.c -lavcodec -lavformat -lavutil -lswscale -lswresample -lglfw3 -framework OpenGL -framework Cocoa -framework IOKit -DGLFW_INCLUDE_GLCOREARB -DMINIAUDIO_IMPLEMENTATION -DGL_SILENCE_DEPRECATION 
 
 install: hpl
 	mkdir -p $(BINDIR)
