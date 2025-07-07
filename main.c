@@ -466,6 +466,7 @@ int main(int argc, const char *argv[]) {
 
     while (!glfwWindowShouldClose(context->window)) {
         if ((ret = av_read_frame(context->format_context, context->packet)) < 0) {
+            if (ret == AVERROR_EOF) break;
             fprintf(stderr, "ERROR: cannot read packet. %s\n", av_err2str(ret));
             return -1;
         }
