@@ -100,7 +100,7 @@ int init_video_scaler(Context *context) {
 
 int init_input(Context *context, const char *url) {
     int ret;
-    av_log_set_level(AV_LOG_DEBUG);
+    av_log_set_level(AV_LOG_TRACE);
 
     AVDictionary *options = NULL;
 
@@ -447,7 +447,7 @@ int main(int argc, const char *argv[]) {
     }
 
     if ((ret = init_audio_codec(context)) < 0) {
-        fprintf(stderr, "WARNING: cannot initialize audio codec\n");
+        fprintf(stderr, "WARN: cannot initialize audio codec\n");
     } else {
         if ((ret = init_audio_resampler(context)) < 0) {
             fprintf(stderr, "ERROR: cannot initialize audio resampler\n");
@@ -461,8 +461,8 @@ int main(int argc, const char *argv[]) {
 
     }
 
-    printf("video codec = %s\n", context->video_codec->name);
-    printf("audio codec = %s\n", context->audio_codec->name);
+    if (context->video_codec) printf("video codec = %s\n", context->video_codec->name);
+    if (context->audio_codec) printf("audio codec = %s\n", context->audio_codec->name);
 
     while (!glfwWindowShouldClose(context->window)) {
         if ((ret = av_read_frame(context->format_context, context->packet)) < 0) {
