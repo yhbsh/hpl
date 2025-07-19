@@ -20,6 +20,8 @@ int main(int argc, const char *argv[]) {
         return -1;
     }
 
+    av_log_set_level(AV_LOG_TRACE);
+
     AVFormatContext *format_context = NULL;
     const AVCodec *video_codec = NULL;
     const AVCodec *audio_codec = NULL;
@@ -113,7 +115,6 @@ int main(int argc, const char *argv[]) {
     glLinkProgram(program);
     glUseProgram(program);
 
-    av_log_set_level(AV_LOG_INFO);
     if (avformat_open_input(&format_context, argv[1], NULL, NULL) < 0) {
         fprintf(stderr, "ERROR: cannot open input.\n");
         return -1;
