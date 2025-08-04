@@ -4,12 +4,11 @@ BINDIR := $(PREFIX)/bin
 default: hpl
 
 hpl: hpl.o
-	clang -o hpl hpl.o \
-		-lavcodec -lavformat -lavutil -lswscale -lswresample -lglfw3 -lx264 -lx265 -lc++ -lvpx -lz -lbz2 -llzma -liconv \
-		-framework OpenGL -framework Cocoa -framework IOKit -framework VideoToolbox -framework AudioToolbox -framework CoreVideo -framework CoreMedia -framework Security \
+	clang -o hpl hpl.o $(shell pkg-config --libs libavformat libavcodec libswscale libswresample glfw3) -framework OpenGL
+
 
 hpl.o: hpl.cc
-	clang++ -g -c -o hpl.o hpl.cc -DGLFW_INCLUDE_GLCOREARB -DMINIAUDIO_IMPLEMENTATION -DGL_SILENCE_DEPRECATION 
+	clang++ $(shell pkg-config --cflags libavformat libavcodec libswscale libswresample glfw3) -g -c -o hpl.o hpl.cc -DGLFW_INCLUDE_GLCOREARB -DMINIAUDIO_IMPLEMENTATION -DGL_SILENCE_DEPRECATION
 
 install: hpl
 	mkdir -p $(BINDIR)

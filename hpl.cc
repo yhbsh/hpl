@@ -313,11 +313,6 @@ int main(int argc, char **argv) {
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, frame.width, frame.height, 0, GL_RGB, GL_UNSIGNED_BYTE, frame.data[0]);
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
         glfwSwapBuffers(window);
-
-        int64_t pts = frame.pts * time_base;
-        int64_t fts = av_gettime() - begin;
-        if (fts < pts) av_usleep(pts - fts);
-
         //printf("video frame = %dx%d %s\n", frame.width, frame.height, av_get_pix_fmt_name((enum AVPixelFormat)frame.format));
     }
 
