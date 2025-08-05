@@ -126,11 +126,11 @@ void run(Context *context) {
     }
 
     if (videoCodec) {
-        printf("videoCodec = %s\n", videoCodec->long_name);
+        printf("videoCodec = %s\n", videoCodec->name);
     }
 
     if (audioCodec) {
-        printf("audioCodec = %s\n", audioCodec->long_name);
+        printf("audioCodec = %s\n", audioCodec->name);
     }
 
     AVPacket *packet = av_packet_alloc();
