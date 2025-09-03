@@ -4,7 +4,7 @@ BINDIR := $(PREFIX)/bin
 default: hpl
 
 hpl: hpl.o
-	clang -o hpl hpl.o $(shell pkg-config --libs libavformat libavcodec libswscale libswresample glfw3) -framework OpenGL
+	clang -o hpl hpl.o $(shell pkg-config --static --libs libavformat libavcodec libswscale libswresample glfw3) -framework OpenGL
 
 
 hpl.o: hpl.cc
