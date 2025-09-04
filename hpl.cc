@@ -43,8 +43,8 @@ struct Context {
 };
 
 void run(Context *context) {
-    av_log_set_level(AV_LOG_DEBUG);
-
+    av_log_set_level(AV_LOG_TRACE);
+    
     const char *url = context->url;
     AVFormatContext *formatContext = NULL;
     if (int ret = avformat_open_input(&formatContext, url, NULL, NULL) < 0) {
@@ -293,7 +293,6 @@ int main(int argc, char **argv) {
     glUseProgram(program);
 
     int64_t begin = av_gettime();
-    double time_base = av_q2d(context->videoStream->time_base) * 1000000.0;
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
@@ -310,9 +309,15 @@ int main(int argc, char **argv) {
         }
 
         glClear(GL_COLOR_BUFFER_BIT);
+
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, frame.linesize[0] / 3); // 3 for RGB24
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, frame.width, frame.height, 0, GL_RGB, GL_UNSIGNED_BYTE, frame.data[0]);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0); // reset
+
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+
         glfwSwapBuffers(window);
+
         //printf("video frame = %dx%d %s\n", frame.width, frame.height, av_get_pix_fmt_name((enum AVPixelFormat)frame.format));
     }
 
