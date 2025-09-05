@@ -44,10 +44,17 @@ struct Context {
 
 void run(Context *context) {
     av_log_set_level(AV_LOG_TRACE);
-    
+
     const char *url = context->url;
     AVFormatContext *formatContext = NULL;
-    if (int ret = avformat_open_input(&formatContext, url, NULL, NULL) < 0) {
+
+    AVDictionary *options = NULL;
+    av_dict_set(&options, "fflags", "nobuffer", 0);
+    av_dict_set(&options, "flags", "low_delay", 0);
+    av_dict_set(&options, "analyzeduration", "0", 0);
+    av_dict_set(&options, "probesize", "32", 0);
+
+    if (int ret = avformat_open_input(&formatContext, url, NULL, &options) < 0) {
         fprintf(stderr, "ERROR: cannot open input. %s\n", av_err2str(ret));
         return;
     }
