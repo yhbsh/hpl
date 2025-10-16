@@ -21,9 +21,9 @@ typedef struct {
     AVFrame *rgba_frame;
     AVPacket *pkt;
     SwsContext *sws_ctx;
-} VideoDecoder;
+} Decoder;
 
-static int vd_decoder_init(VideoDecoder *dec, const char *url, int out_width, int out_height) {
+static int decoder_init(Decoder *dec, const char *url, int out_width, int out_height) {
     int ret;
 
     av_log_set_level(AV_LOG_TRACE);
@@ -55,7 +55,7 @@ static int vd_decoder_init(VideoDecoder *dec, const char *url, int out_width, in
     return 0;
 }
 
-static int vd_decoder_next_frame(VideoDecoder *dec, uint8_t **out_rgba) {
+static int decoder_read_frame(Decoder *dec, uint8_t **out_rgba) {
     int ret;
     while ((ret = av_read_frame(dec->ifmt_ctx, dec->pkt)) >= 0) {
         if (dec->pkt->stream_index != dec->vstream->index) {
@@ -85,7 +85,7 @@ static int vd_decoder_next_frame(VideoDecoder *dec, uint8_t **out_rgba) {
     return AVERROR_EOF;
 }
 
-static void vd_decoder_close(VideoDecoder *dec) {
+static void decoder_deinit(Decoder *dec) {
     if (dec->sws_ctx) sws_freeContext(dec->sws_ctx);
     if (dec->rgba_frame) av_frame_free(&dec->rgba_frame);
     if (dec->frame) av_frame_free(&dec->frame);

@@ -3,7 +3,7 @@
 
 #include <raylib.h>
 
-#include "video_decoder.h"
+#include "decoder.h"
 
 #define W 1280
 #define H 720
@@ -18,8 +18,8 @@ int main(int argc, char **argv) {
     InitWindow(W, H, "WINDOW");
     SetTargetFPS(180);
 
-    VideoDecoder decoder;
-    if (vd_decoder_init(&decoder, argv[1], W, H) != 0) {
+    Decoder decoder;
+    if (decoder_init(&decoder, argv[1], W, H) != 0) {
         CloseWindow();
         return -1;
     }
@@ -35,7 +35,7 @@ int main(int argc, char **argv) {
 
     Texture2D texture = LoadTextureFromImage(img);
     while (!WindowShouldClose()) {
-        if (vd_decoder_next_frame(&decoder, &data) == 1 && data) { UpdateTexture(texture, data); }
+        if (decoder_read_frame(&decoder, &data) == 1 && data) { UpdateTexture(texture, data); }
 
         BeginDrawing();
         DrawTexture(texture, 0, 0, WHITE);
@@ -43,7 +43,7 @@ int main(int argc, char **argv) {
     }
 
     UnloadTexture(texture);
-    vd_decoder_close(&decoder);
+    decoder_deinit(&decoder);
     CloseWindow();
     return 0;
 }

@@ -6,7 +6,7 @@ LDFLAGS := `pkg-config --static --libs libavformat libavcodec libswscale raylib`
 hpl: hpl.o
 	clang -o $@ $^ $(LDFLAGS)
 
-hpl.o: hpl.c video_decoder.h
+hpl.o: hpl.c decoder.h
 	clang $(CFLAGS) -c -o $@ $<
 
 install: hpl
