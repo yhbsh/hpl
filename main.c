@@ -266,51 +266,31 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    SDL_Window *window = SDL_CreateWindow("hpl", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, 0);
-    if (!window) {
-        fprintf(stderr, "error: SDL_CreateWindow: %s\n", SDL_GetError());
-        SDL_Quit();
-        return 1;
-    }
-
-    SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    if (!renderer) {
-        fprintf(stderr, "error: SDL_CreateRenderer: %s\n", SDL_GetError());
-        SDL_DestroyWindow(window);
-        SDL_Quit();
-        return 1;
-    }
-
-    SDL_Texture *texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, width, height);
-    if (!texture) {
-        fprintf(stderr, "error: SDL_CreateTexture: %s\n", SDL_GetError());
-        SDL_DestroyRenderer(renderer);
-        SDL_DestroyWindow(window);
-        SDL_Quit();
-        return 1;
-    }
-
     fprintf(stdout, "loading: %s (output: %dx%d @ %d fps)\n", url, width, height, fps);
 
     Demuxer dmx;
     if (demuxer_init(&dmx, url) != 0) {
         fprintf(stderr, "error: failed to open input\n");
-        SDL_DestroyTexture(texture);
-        SDL_DestroyRenderer(renderer);
-        SDL_DestroyWindow(window);
         SDL_Quit();
         return 1;
     }
 
-    VideoDecoder vdec;
-    if (video_decoder_init(&vdec, &dmx, width, height) != 0) {
-        fprintf(stderr, "error: failed to initialize video decoder\n");
+    if (dmx.video_stream_idx < 0 && dmx.audio_stream_idx < 0) {
+        fprintf(stderr, "error: input has neither video nor audio stream\n");
         demuxer_deinit(&dmx);
-        SDL_DestroyTexture(texture);
-        SDL_DestroyRenderer(renderer);
-        SDL_DestroyWindow(window);
         SDL_Quit();
         return 1;
+    }
+
+    int has_video = 0;
+    VideoDecoder vdec = {0};
+    if (dmx.video_stream_idx >= 0) {
+        if (video_decoder_init(&vdec, &dmx, width, height) == 0) {
+            has_video = 1;
+            fprintf(stdout, "video: %s (%dx%d)\n", vdec.codec->name, vdec.codec_ctx->width, vdec.codec_ctx->height);
+        } else {
+            fprintf(stderr, "warning: video stream found but decoder init failed\n");
+        }
     }
 
     int has_audio = 0;
@@ -322,14 +302,41 @@ int main(int argc, char **argv) {
                     adec.codec->name, adec.codec_ctx->sample_rate,
                     adec.codec_ctx->ch_layout.nb_channels);
         } else {
-            fprintf(stderr, "warning: audio stream found but decoder init failed, playing video only\n");
+            fprintf(stderr, "warning: audio stream found but decoder init failed\n");
         }
     }
 
-    fprintf(stdout, "video: %s (%dx%d)\n", vdec.codec->name, vdec.codec_ctx->width, vdec.codec_ctx->height);
+    if (!has_video && !has_audio) {
+        fprintf(stderr, "error: no usable streams\n");
+        demuxer_deinit(&dmx);
+        SDL_Quit();
+        return 1;
+    }
 
-    SDL_Rect viewport;
-    {
+    SDL_Window *window = NULL;
+    SDL_Renderer *renderer = NULL;
+    SDL_Texture *texture = NULL;
+    SDL_Rect viewport = {0};
+
+    if (has_video) {
+        window = SDL_CreateWindow("hpl", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, 0);
+        if (!window) {
+            fprintf(stderr, "error: SDL_CreateWindow: %s\n", SDL_GetError());
+            goto cleanup;
+        }
+
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+        if (!renderer) {
+            fprintf(stderr, "error: SDL_CreateRenderer: %s\n", SDL_GetError());
+            goto cleanup;
+        }
+
+        texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, width, height);
+        if (!texture) {
+            fprintf(stderr, "error: SDL_CreateTexture: %s\n", SDL_GetError());
+            goto cleanup;
+        }
+
         float src_aspect = (float)vdec.codec_ctx->width / vdec.codec_ctx->height;
         float dst_aspect = (float)width / height;
         if (src_aspect > dst_aspect) {
@@ -356,14 +363,15 @@ int main(int argc, char **argv) {
         }
 
         int got_video_frame = 0;
-        while (!got_video_frame && !eof) {
+        while (!eof && (has_video ? !got_video_frame : 1)) {
             int ret = demuxer_read(&dmx);
             if (ret < 0) {
                 eof = 1;
                 break;
             }
 
-            if (dmx.pkt->stream_index == dmx.video_stream_idx) {
+            int audio_pkt = 0;
+            if (has_video && dmx.pkt->stream_index == dmx.video_stream_idx) {
                 video_decoder_send(&vdec, dmx.pkt);
                 if (video_decoder_receive(&vdec, &data) == 0 && data) {
                     SDL_UpdateTexture(texture, NULL, data, width * 4);
@@ -372,21 +380,29 @@ int main(int argc, char **argv) {
             } else if (has_audio && dmx.pkt->stream_index == dmx.audio_stream_idx) {
                 audio_decoder_send(&adec, dmx.pkt);
                 audio_decoder_receive(&adec);
+                audio_pkt = 1;
             }
             av_packet_unref(dmx.pkt);
+            if (!has_video && audio_pkt) break;
         }
 
-        SDL_RenderClear(renderer);
-        SDL_RenderCopy(renderer, texture, NULL, &viewport);
-        SDL_RenderPresent(renderer);
+        if (has_video) {
+            SDL_RenderClear(renderer);
+            SDL_RenderCopy(renderer, texture, NULL, &viewport);
+            SDL_RenderPresent(renderer);
+        } else {
+            if (eof && SDL_GetQueuedAudioSize(adec.dev) == 0) running = 0;
+            SDL_Delay(10);
+        }
     }
 
-    video_decoder_deinit(&vdec);
+cleanup:
+    if (has_video) video_decoder_deinit(&vdec);
     if (has_audio) audio_decoder_deinit(&adec);
     demuxer_deinit(&dmx);
-    SDL_DestroyTexture(texture);
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
+    if (texture) SDL_DestroyTexture(texture);
+    if (renderer) SDL_DestroyRenderer(renderer);
+    if (window) SDL_DestroyWindow(window);
     SDL_Quit();
     return 0;
 }
