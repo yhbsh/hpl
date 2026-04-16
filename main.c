@@ -13,10 +13,6 @@
 #include <getopt.h>
 #include <string.h>
 
-#define DEFAULT_W 1280
-#define DEFAULT_H 720
-#define DEFAULT_FPS 180
-
 typedef struct {
     AVFormatContext *fmt_ctx;
     AVPacket *pkt;
@@ -208,27 +204,12 @@ static void audio_decoder_deinit(AudioDecoder *adec) {
 }
 
 int main(int argc, char **argv) {
-    int width = DEFAULT_W, height = DEFAULT_H, fps = DEFAULT_FPS;
-    int log_level = AV_LOG_INFO;
+    int width = 0, height = 0;
+    int log_level = AV_LOG_TRACE;
     int opt;
 
-    while ((opt = getopt(argc, argv, "s:f:l:h")) != -1) {
+    while ((opt = getopt(argc, argv, "l:h")) != -1) {
         switch (opt) {
-            case 's': {
-                if (sscanf(optarg, "%dx%d", &width, &height) != 2) {
-                    fprintf(stderr, "error: invalid size format. use WIDTHxHEIGHT\n");
-                    return 1;
-                }
-                break;
-            }
-            case 'f': {
-                fps = atoi(optarg);
-                if (fps <= 0) {
-                    fprintf(stderr, "error: fps must be positive\n");
-                    return 1;
-                }
-                break;
-            }
             case 'l': {
                 if (strcmp(optarg, "QUIET") == 0) log_level = AV_LOG_QUIET;
                 else if (strcmp(optarg, "ERROR") == 0) log_level = AV_LOG_ERROR;
@@ -245,10 +226,8 @@ int main(int argc, char **argv) {
             case 'h':
             default:
                 fprintf(stderr, "usage: %s [options] <url>\n", argv[0]);
-                fprintf(stderr, "  -s WIDTHxHEIGHT  output size (default %dx%d)\n", DEFAULT_W, DEFAULT_H);
-                fprintf(stderr, "  -f FPS           target fps (default %d)\n", DEFAULT_FPS);
-                fprintf(stderr, "  -l LEVEL         log level: QUIET, ERROR, WARNING, INFO, DEBUG, TRACE (default INFO)\n");
-                fprintf(stderr, "  -h               show this help\n");
+                fprintf(stderr, "  -l LEVEL  log level: QUIET, ERROR, WARNING, INFO, DEBUG, TRACE (default TRACE)\n");
+                fprintf(stderr, "  -h        show this help\n");
                 return opt == 'h' ? 0 : 1;
         }
     }
@@ -260,13 +239,14 @@ int main(int argc, char **argv) {
 
     const char *url = argv[optind];
     av_log_set_level(log_level);
+    av_log_set_callback(av_log_default_callback);
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) < 0) {
         fprintf(stderr, "error: SDL_Init: %s\n", SDL_GetError());
         return 1;
     }
 
-    fprintf(stdout, "loading: %s (output: %dx%d @ %d fps)\n", url, width, height, fps);
+    fprintf(stdout, "loading: %s\n", url);
 
     Demuxer dmx;
     if (demuxer_init(&dmx, url) != 0) {
@@ -282,12 +262,19 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    if (dmx.video_stream_idx >= 0 && (width == 0 || height == 0)) {
+        AVCodecParameters *cp = dmx.fmt_ctx->streams[dmx.video_stream_idx]->codecpar;
+        width = cp->width;
+        height = cp->height;
+    }
+
     int has_video = 0;
     VideoDecoder vdec = {0};
     if (dmx.video_stream_idx >= 0) {
         if (video_decoder_init(&vdec, &dmx, width, height) == 0) {
             has_video = 1;
-            fprintf(stdout, "video: %s (%dx%d)\n", vdec.codec->name, vdec.codec_ctx->width, vdec.codec_ctx->height);
+            fprintf(stdout, "video: %s (%dx%d -> %dx%d)\n",
+                    vdec.codec->name, vdec.codec_ctx->width, vdec.codec_ctx->height, width, height);
         } else {
             fprintf(stderr, "warning: video stream found but decoder init failed\n");
         }
@@ -319,11 +306,12 @@ int main(int argc, char **argv) {
     SDL_Rect viewport = {0};
 
     if (has_video) {
-        window = SDL_CreateWindow("hpl", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, 0);
+        window = SDL_CreateWindow("hpl", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, SDL_WINDOW_SHOWN);
         if (!window) {
             fprintf(stderr, "error: SDL_CreateWindow: %s\n", SDL_GetError());
             goto cleanup;
         }
+        SDL_RaiseWindow(window);
 
         renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
         if (!renderer) {
