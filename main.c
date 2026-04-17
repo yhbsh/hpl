@@ -3,6 +3,7 @@
 #include <libavutil/avutil.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
+#include <libavutil/time.h>
 #include <libswscale/swscale.h>
 #include <libswresample/swresample.h>
 
@@ -12,6 +13,18 @@
 #include <stdlib.h>
 #include <getopt.h>
 #include <string.h>
+
+typedef struct {
+    SDL_atomic_t *quit;
+    int64_t deadline_us;
+} InterruptCtx;
+
+static int interrupt_cb(void *opaque) {
+    InterruptCtx *c = opaque;
+    if (c->quit && SDL_AtomicGet(c->quit)) return 1;
+    if (c->deadline_us && av_gettime_relative() > c->deadline_us) return 1;
+    return 0;
+}
 
 typedef struct {
     AVFormatContext *fmt_ctx;
@@ -38,14 +51,30 @@ typedef struct {
     SDL_AudioDeviceID dev;
 } AudioDecoder;
 
-static int demuxer_init(Demuxer *dmx, const char *url) {
+static int demuxer_init(Demuxer *dmx, const char *url, InterruptCtx *ictx) {
     int ret;
 
-    dmx->fmt_ctx = NULL;
+    dmx->fmt_ctx = avformat_alloc_context();
+    if (!dmx->fmt_ctx) return AVERROR(ENOMEM);
+    if (ictx) {
+        dmx->fmt_ctx->interrupt_callback.callback = interrupt_cb;
+        dmx->fmt_ctx->interrupt_callback.opaque = ictx;
+    }
+
     dmx->pkt = av_packet_alloc();
     if (!dmx->pkt) return AVERROR(ENOMEM);
 
-    if ((ret = avformat_open_input(&dmx->fmt_ctx, url, NULL, NULL)) < 0) return ret;
+    AVDictionary *opts = NULL;
+    av_dict_set(&opts, "timeout", "5000000", 0);
+    av_dict_set(&opts, "rw_timeout", "5000000", 0);
+    av_dict_set(&opts, "stimeout", "5000000", 0);
+
+    if ((ret = avformat_open_input(&dmx->fmt_ctx, url, NULL, &opts)) < 0) {
+        av_dict_free(&opts);
+        return ret;
+    }
+    av_dict_free(&opts);
+
     if ((ret = avformat_find_stream_info(dmx->fmt_ctx, NULL)) < 0) return ret;
 
     dmx->video_stream_idx = av_find_best_stream(dmx->fmt_ctx, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
@@ -178,7 +207,7 @@ static int audio_decoder_receive(AudioDecoder *adec) {
     int ret;
     while ((ret = avcodec_receive_frame(adec->codec_ctx, adec->frame)) >= 0) {
         int out_samples = swr_get_out_samples(adec->swr_ctx, adec->frame->nb_samples);
-        int needed = out_samples * 2 * sizeof(int16_t); // stereo S16
+        int needed = out_samples * 2 * sizeof(int16_t);
         if (needed > adec->buf_size) {
             adec->buf = realloc(adec->buf, needed);
             adec->buf_size = needed;
@@ -203,8 +232,114 @@ static void audio_decoder_deinit(AudioDecoder *adec) {
     free(adec->buf);
 }
 
+typedef struct {
+    const char *url;
+
+    Demuxer dmx;
+    VideoDecoder vdec;
+    AudioDecoder adec;
+    int has_video;
+    int has_audio;
+    int width, height;
+
+    InterruptCtx ictx;
+    SDL_atomic_t quit;
+    SDL_atomic_t init_done;
+    SDL_atomic_t init_failed;
+    SDL_atomic_t eof;
+
+    SDL_mutex *frame_mu;
+    uint8_t *frame_buf;
+    int frame_buf_size;
+    int frame_ready;
+} Player;
+
+static int io_thread(void *data) {
+    Player *p = data;
+
+    p->ictx.quit = &p->quit;
+    p->ictx.deadline_us = av_gettime_relative() + 10 * 1000000;
+
+    if (demuxer_init(&p->dmx, p->url, &p->ictx) != 0) {
+        fprintf(stderr, "error: failed to open input\n");
+        SDL_AtomicSet(&p->init_failed, 1);
+        SDL_AtomicSet(&p->init_done, 1);
+        return 1;
+    }
+
+    p->ictx.deadline_us = 0;
+
+    if (p->dmx.video_stream_idx < 0 && p->dmx.audio_stream_idx < 0) {
+        fprintf(stderr, "error: input has neither video nor audio stream\n");
+        SDL_AtomicSet(&p->init_failed, 1);
+        SDL_AtomicSet(&p->init_done, 1);
+        return 1;
+    }
+
+    if (p->dmx.video_stream_idx >= 0) {
+        AVCodecParameters *cp = p->dmx.fmt_ctx->streams[p->dmx.video_stream_idx]->codecpar;
+        p->width = cp->width;
+        p->height = cp->height;
+        if (video_decoder_init(&p->vdec, &p->dmx, p->width, p->height) == 0) {
+            p->has_video = 1;
+            fprintf(stdout, "video: %s (%dx%d)\n", p->vdec.codec->name, p->width, p->height);
+        } else {
+            fprintf(stderr, "warning: video stream found but decoder init failed\n");
+        }
+    }
+
+    if (p->dmx.audio_stream_idx >= 0) {
+        if (audio_decoder_init(&p->adec, &p->dmx) == 0) {
+            p->has_audio = 1;
+            fprintf(stdout, "audio: %s (%d Hz, %d ch)\n",
+                    p->adec.codec->name, p->adec.codec_ctx->sample_rate,
+                    p->adec.codec_ctx->ch_layout.nb_channels);
+        } else {
+            fprintf(stderr, "warning: audio stream found but decoder init failed\n");
+        }
+    }
+
+    if (!p->has_video && !p->has_audio) {
+        fprintf(stderr, "error: no usable streams\n");
+        SDL_AtomicSet(&p->init_failed, 1);
+        SDL_AtomicSet(&p->init_done, 1);
+        return 1;
+    }
+
+    SDL_AtomicSet(&p->init_done, 1);
+
+    while (!SDL_AtomicGet(&p->quit)) {
+        int ret = demuxer_read(&p->dmx);
+        if (ret < 0) {
+            SDL_AtomicSet(&p->eof, 1);
+            break;
+        }
+
+        if (p->has_video && p->dmx.pkt->stream_index == p->dmx.video_stream_idx) {
+            video_decoder_send(&p->vdec, p->dmx.pkt);
+            uint8_t *rgba = NULL;
+            if (video_decoder_receive(&p->vdec, &rgba) == 0 && rgba) {
+                int size = p->width * p->height * 4;
+                SDL_LockMutex(p->frame_mu);
+                if (p->frame_buf_size < size) {
+                    p->frame_buf = realloc(p->frame_buf, size);
+                    p->frame_buf_size = size;
+                }
+                memcpy(p->frame_buf, rgba, size);
+                p->frame_ready = 1;
+                SDL_UnlockMutex(p->frame_mu);
+            }
+        } else if (p->has_audio && p->dmx.pkt->stream_index == p->dmx.audio_stream_idx) {
+            audio_decoder_send(&p->adec, p->dmx.pkt);
+            audio_decoder_receive(&p->adec);
+        }
+        av_packet_unref(p->dmx.pkt);
+    }
+
+    return 0;
+}
+
 int main(int argc, char **argv) {
-    int width = 0, height = 0;
     int log_level = AV_LOG_TRACE;
     int opt;
 
@@ -248,99 +383,20 @@ int main(int argc, char **argv) {
 
     fprintf(stdout, "loading: %s\n", url);
 
-    Demuxer dmx;
-    if (demuxer_init(&dmx, url) != 0) {
-        fprintf(stderr, "error: failed to open input\n");
-        SDL_Quit();
-        return 1;
-    }
+    Player player = {0};
+    player.url = url;
+    SDL_AtomicSet(&player.quit, 0);
+    SDL_AtomicSet(&player.init_done, 0);
+    SDL_AtomicSet(&player.init_failed, 0);
+    SDL_AtomicSet(&player.eof, 0);
+    player.frame_mu = SDL_CreateMutex();
 
-    if (dmx.video_stream_idx < 0 && dmx.audio_stream_idx < 0) {
-        fprintf(stderr, "error: input has neither video nor audio stream\n");
-        demuxer_deinit(&dmx);
-        SDL_Quit();
-        return 1;
-    }
-
-    if (dmx.video_stream_idx >= 0 && (width == 0 || height == 0)) {
-        AVCodecParameters *cp = dmx.fmt_ctx->streams[dmx.video_stream_idx]->codecpar;
-        width = cp->width;
-        height = cp->height;
-    }
-
-    int has_video = 0;
-    VideoDecoder vdec = {0};
-    if (dmx.video_stream_idx >= 0) {
-        if (video_decoder_init(&vdec, &dmx, width, height) == 0) {
-            has_video = 1;
-            fprintf(stdout, "video: %s (%dx%d -> %dx%d)\n",
-                    vdec.codec->name, vdec.codec_ctx->width, vdec.codec_ctx->height, width, height);
-        } else {
-            fprintf(stderr, "warning: video stream found but decoder init failed\n");
-        }
-    }
-
-    int has_audio = 0;
-    AudioDecoder adec = {0};
-    if (dmx.audio_stream_idx >= 0) {
-        if (audio_decoder_init(&adec, &dmx) == 0) {
-            has_audio = 1;
-            fprintf(stdout, "audio: %s (%d Hz, %d ch)\n",
-                    adec.codec->name, adec.codec_ctx->sample_rate,
-                    adec.codec_ctx->ch_layout.nb_channels);
-        } else {
-            fprintf(stderr, "warning: audio stream found but decoder init failed\n");
-        }
-    }
-
-    if (!has_video && !has_audio) {
-        fprintf(stderr, "error: no usable streams\n");
-        demuxer_deinit(&dmx);
-        SDL_Quit();
-        return 1;
-    }
+    SDL_Thread *io = SDL_CreateThread(io_thread, "io", &player);
 
     SDL_Window *window = NULL;
     SDL_Renderer *renderer = NULL;
     SDL_Texture *texture = NULL;
-    SDL_Rect viewport = {0};
-
-    if (has_video) {
-        window = SDL_CreateWindow("hpl", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, SDL_WINDOW_SHOWN);
-        if (!window) {
-            fprintf(stderr, "error: SDL_CreateWindow: %s\n", SDL_GetError());
-            goto cleanup;
-        }
-        SDL_RaiseWindow(window);
-
-        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-        if (!renderer) {
-            fprintf(stderr, "error: SDL_CreateRenderer: %s\n", SDL_GetError());
-            goto cleanup;
-        }
-
-        texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, width, height);
-        if (!texture) {
-            fprintf(stderr, "error: SDL_CreateTexture: %s\n", SDL_GetError());
-            goto cleanup;
-        }
-
-        float src_aspect = (float)vdec.codec_ctx->width / vdec.codec_ctx->height;
-        float dst_aspect = (float)width / height;
-        if (src_aspect > dst_aspect) {
-            viewport.w = width;
-            viewport.h = (int)(width / src_aspect);
-        } else {
-            viewport.h = height;
-            viewport.w = (int)(height * src_aspect);
-        }
-        viewport.x = (width - viewport.w) / 2;
-        viewport.y = (height - viewport.h) / 2;
-    }
-
-    uint8_t *data = NULL;
     int running = 1;
-    int eof = 0;
 
     while (running) {
         SDL_Event ev;
@@ -350,44 +406,70 @@ int main(int argc, char **argv) {
             }
         }
 
-        int got_video_frame = 0;
-        while (!eof && (has_video ? !got_video_frame : 1)) {
-            int ret = demuxer_read(&dmx);
-            if (ret < 0) {
-                eof = 1;
+        if (!SDL_AtomicGet(&player.init_done)) {
+            SDL_Delay(10);
+            continue;
+        }
+
+        if (SDL_AtomicGet(&player.init_failed)) {
+            running = 0;
+            break;
+        }
+
+        if (player.has_video && !window) {
+            window = SDL_CreateWindow("hpl", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                                      player.width, player.height, SDL_WINDOW_SHOWN);
+            if (!window) {
+                fprintf(stderr, "error: SDL_CreateWindow: %s\n", SDL_GetError());
+                running = 0;
+                break;
+            }
+            SDL_RaiseWindow(window);
+
+            renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+            if (!renderer) {
+                fprintf(stderr, "error: SDL_CreateRenderer: %s\n", SDL_GetError());
+                running = 0;
                 break;
             }
 
-            int audio_pkt = 0;
-            if (has_video && dmx.pkt->stream_index == dmx.video_stream_idx) {
-                video_decoder_send(&vdec, dmx.pkt);
-                if (video_decoder_receive(&vdec, &data) == 0 && data) {
-                    SDL_UpdateTexture(texture, NULL, data, width * 4);
-                    got_video_frame = 1;
-                }
-            } else if (has_audio && dmx.pkt->stream_index == dmx.audio_stream_idx) {
-                audio_decoder_send(&adec, dmx.pkt);
-                audio_decoder_receive(&adec);
-                audio_pkt = 1;
+            texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING,
+                                        player.width, player.height);
+            if (!texture) {
+                fprintf(stderr, "error: SDL_CreateTexture: %s\n", SDL_GetError());
+                running = 0;
+                break;
             }
-            av_packet_unref(dmx.pkt);
-            if (!has_video && audio_pkt) break;
         }
 
-        if (has_video) {
+        if (player.has_video) {
+            SDL_LockMutex(player.frame_mu);
+            if (player.frame_ready && texture) {
+                SDL_UpdateTexture(texture, NULL, player.frame_buf, player.width * 4);
+                player.frame_ready = 0;
+            }
+            SDL_UnlockMutex(player.frame_mu);
+
             SDL_RenderClear(renderer);
-            SDL_RenderCopy(renderer, texture, NULL, &viewport);
+            SDL_RenderCopy(renderer, texture, NULL, NULL);
             SDL_RenderPresent(renderer);
         } else {
-            if (eof && SDL_GetQueuedAudioSize(adec.dev) == 0) running = 0;
+            if (SDL_AtomicGet(&player.eof) &&
+                (!player.has_audio || SDL_GetQueuedAudioSize(player.adec.dev) == 0)) {
+                running = 0;
+            }
             SDL_Delay(10);
         }
     }
 
-cleanup:
-    if (has_video) video_decoder_deinit(&vdec);
-    if (has_audio) audio_decoder_deinit(&adec);
-    demuxer_deinit(&dmx);
+    SDL_AtomicSet(&player.quit, 1);
+    SDL_WaitThread(io, NULL);
+
+    if (player.has_video) video_decoder_deinit(&player.vdec);
+    if (player.has_audio) audio_decoder_deinit(&player.adec);
+    demuxer_deinit(&player.dmx);
+    if (player.frame_mu) SDL_DestroyMutex(player.frame_mu);
+    free(player.frame_buf);
     if (texture) SDL_DestroyTexture(texture);
     if (renderer) SDL_DestroyRenderer(renderer);
     if (window) SDL_DestroyWindow(window);
