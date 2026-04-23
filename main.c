@@ -13,6 +13,11 @@
 #include <stdlib.h>
 #include <getopt.h>
 #include <string.h>
+#include <math.h>
+
+#define VQ_SIZE 8
+#define SYNC_THRESHOLD_SEC 0.01
+#define DROP_THRESHOLD_SEC 0.10
 
 typedef struct {
     SDL_atomic_t *quit;
@@ -39,6 +44,7 @@ typedef struct {
     AVFrame *frame;
     AVFrame *rgba_frame;
     SwsContext *sws_ctx;
+    AVRational time_base;
 } VideoDecoder;
 
 typedef struct {
@@ -49,6 +55,9 @@ typedef struct {
     uint8_t *buf;
     int buf_size;
     SDL_AudioDeviceID dev;
+    AVRational time_base;
+    double clock_written;
+    int byte_rate;
 } AudioDecoder;
 
 static int demuxer_init(Demuxer *dmx, const char *url, InterruptCtx *ictx) {
@@ -122,6 +131,8 @@ static int video_decoder_init(VideoDecoder *vdec, Demuxer *dmx, int out_w, int o
     vdec->rgba_frame->width = out_w;
     vdec->rgba_frame->height = out_h;
 
+    vdec->time_base = stream->time_base;
+
     return 0;
 }
 
@@ -129,12 +140,16 @@ static int video_decoder_send(VideoDecoder *vdec, AVPacket *pkt) {
     return avcodec_send_packet(vdec->codec_ctx, pkt);
 }
 
-static int video_decoder_receive(VideoDecoder *vdec, uint8_t **out_rgba) {
+static int video_decoder_receive(VideoDecoder *vdec, uint8_t **out_rgba, double *out_pts) {
     int ret = avcodec_receive_frame(vdec->codec_ctx, vdec->frame);
     if (ret < 0) return ret;
 
     sws_scale_frame(vdec->sws_ctx, vdec->rgba_frame, vdec->frame);
     *out_rgba = vdec->rgba_frame->data[0];
+
+    int64_t pts = vdec->frame->best_effort_timestamp;
+    if (pts == AV_NOPTS_VALUE) pts = vdec->frame->pts;
+    *out_pts = (pts == AV_NOPTS_VALUE) ? 0.0 : pts * av_q2d(vdec->time_base);
     return 0;
 }
 
@@ -152,6 +167,7 @@ static int audio_decoder_init(AudioDecoder *adec, Demuxer *dmx) {
     adec->buf = NULL;
     adec->buf_size = 0;
     adec->dev = 0;
+    adec->clock_written = 0.0;
 
     if (dmx->audio_stream_idx < 0) return AVERROR_STREAM_NOT_FOUND;
 
@@ -196,6 +212,9 @@ static int audio_decoder_init(AudioDecoder *adec, Demuxer *dmx) {
 
     SDL_PauseAudioDevice(adec->dev, 0);
 
+    adec->time_base = stream->time_base;
+    adec->byte_rate = out_sample_rate * out_channels * sizeof(int16_t);
+
     return 0;
 }
 
@@ -206,6 +225,10 @@ static int audio_decoder_send(AudioDecoder *adec, AVPacket *pkt) {
 static int audio_decoder_receive(AudioDecoder *adec) {
     int ret;
     while ((ret = avcodec_receive_frame(adec->codec_ctx, adec->frame)) >= 0) {
+        int64_t pts_raw = adec->frame->best_effort_timestamp;
+        if (pts_raw == AV_NOPTS_VALUE) pts_raw = adec->frame->pts;
+        double frame_pts = (pts_raw == AV_NOPTS_VALUE) ? -1.0 : pts_raw * av_q2d(adec->time_base);
+
         int out_samples = swr_get_out_samples(adec->swr_ctx, adec->frame->nb_samples);
         int needed = out_samples * 2 * sizeof(int16_t);
         if (needed > adec->buf_size) {
@@ -219,6 +242,12 @@ static int audio_decoder_receive(AudioDecoder *adec) {
                                     adec->frame->nb_samples);
         if (converted > 0) {
             SDL_QueueAudio(adec->dev, adec->buf, converted * 2 * sizeof(int16_t));
+            double duration = (double)converted / adec->codec_ctx->sample_rate;
+            if (frame_pts >= 0) {
+                adec->clock_written = frame_pts + duration;
+            } else {
+                adec->clock_written += duration;
+            }
         }
     }
     return (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) ? 0 : ret;
@@ -231,6 +260,12 @@ static void audio_decoder_deinit(AudioDecoder *adec) {
     if (adec->codec_ctx) avcodec_free_context(&adec->codec_ctx);
     free(adec->buf);
 }
+
+typedef struct {
+    uint8_t *buf;
+    int size;
+    double pts;
+} VFrame;
 
 typedef struct {
     const char *url;
@@ -248,11 +283,50 @@ typedef struct {
     SDL_atomic_t init_failed;
     SDL_atomic_t eof;
 
-    SDL_mutex *frame_mu;
-    uint8_t *frame_buf;
-    int frame_buf_size;
-    int frame_ready;
+    SDL_mutex *vq_mu;
+    SDL_cond *vq_not_full;
+    VFrame vq[VQ_SIZE];
+    int vq_head, vq_tail, vq_count;
+
+    SDL_mutex *clock_mu;
+    double audio_clock_written;
 } Player;
+
+static double get_master_clock(Player *p, int64_t start_wall_us, double start_pts) {
+    if (p->has_audio) {
+        SDL_LockMutex(p->clock_mu);
+        double c = p->audio_clock_written;
+        SDL_UnlockMutex(p->clock_mu);
+        if (!isnan(c)) {
+            int queued = SDL_GetQueuedAudioSize(p->adec.dev);
+            c -= (double)queued / (double)p->adec.byte_rate;
+            return c;
+        }
+    }
+    return (av_gettime_relative() - start_wall_us) / 1000000.0 + start_pts;
+}
+
+static void push_video_frame(Player *p, uint8_t *rgba, double pts) {
+    SDL_LockMutex(p->vq_mu);
+    while (p->vq_count == VQ_SIZE && !SDL_AtomicGet(&p->quit)) {
+        SDL_CondWaitTimeout(p->vq_not_full, p->vq_mu, 20);
+    }
+    if (SDL_AtomicGet(&p->quit)) {
+        SDL_UnlockMutex(p->vq_mu);
+        return;
+    }
+    VFrame *f = &p->vq[p->vq_tail];
+    int size = p->width * p->height * 4;
+    if (f->size < size) {
+        f->buf = realloc(f->buf, size);
+        f->size = size;
+    }
+    memcpy(f->buf, rgba, size);
+    f->pts = pts;
+    p->vq_tail = (p->vq_tail + 1) % VQ_SIZE;
+    p->vq_count++;
+    SDL_UnlockMutex(p->vq_mu);
+}
 
 static int io_thread(void *data) {
     Player *p = data;
@@ -317,21 +391,20 @@ static int io_thread(void *data) {
 
         if (p->has_video && p->dmx.pkt->stream_index == p->dmx.video_stream_idx) {
             video_decoder_send(&p->vdec, p->dmx.pkt);
-            uint8_t *rgba = NULL;
-            if (video_decoder_receive(&p->vdec, &rgba) == 0 && rgba) {
-                int size = p->width * p->height * 4;
-                SDL_LockMutex(p->frame_mu);
-                if (p->frame_buf_size < size) {
-                    p->frame_buf = realloc(p->frame_buf, size);
-                    p->frame_buf_size = size;
-                }
-                memcpy(p->frame_buf, rgba, size);
-                p->frame_ready = 1;
-                SDL_UnlockMutex(p->frame_mu);
+            for (;;) {
+                uint8_t *rgba = NULL;
+                double pts = 0.0;
+                int rr = video_decoder_receive(&p->vdec, &rgba, &pts);
+                if (rr < 0) break;
+                if (rgba) push_video_frame(p, rgba, pts);
+                if (SDL_AtomicGet(&p->quit)) break;
             }
         } else if (p->has_audio && p->dmx.pkt->stream_index == p->dmx.audio_stream_idx) {
             audio_decoder_send(&p->adec, p->dmx.pkt);
             audio_decoder_receive(&p->adec);
+            SDL_LockMutex(p->clock_mu);
+            p->audio_clock_written = p->adec.clock_written;
+            SDL_UnlockMutex(p->clock_mu);
         }
         av_packet_unref(p->dmx.pkt);
     }
@@ -389,7 +462,10 @@ int main(int argc, char **argv) {
     SDL_AtomicSet(&player.init_done, 0);
     SDL_AtomicSet(&player.init_failed, 0);
     SDL_AtomicSet(&player.eof, 0);
-    player.frame_mu = SDL_CreateMutex();
+    player.vq_mu = SDL_CreateMutex();
+    player.vq_not_full = SDL_CreateCond();
+    player.clock_mu = SDL_CreateMutex();
+    player.audio_clock_written = NAN;
 
     SDL_Thread *io = SDL_CreateThread(io_thread, "io", &player);
 
@@ -397,6 +473,10 @@ int main(int argc, char **argv) {
     SDL_Renderer *renderer = NULL;
     SDL_Texture *texture = NULL;
     int running = 1;
+
+    int64_t start_wall_us = 0;
+    double start_pts = 0.0;
+    int clock_origin_set = 0;
 
     while (running) {
         SDL_Event ev;
@@ -443,16 +523,41 @@ int main(int argc, char **argv) {
         }
 
         if (player.has_video) {
-            SDL_LockMutex(player.frame_mu);
-            if (player.frame_ready && texture) {
-                SDL_UpdateTexture(texture, NULL, player.frame_buf, player.width * 4);
-                player.frame_ready = 0;
+            SDL_LockMutex(player.vq_mu);
+            VFrame *display = NULL;
+            while (player.vq_count > 0) {
+                VFrame *f = &player.vq[player.vq_head];
+                if (!clock_origin_set) {
+                    start_wall_us = av_gettime_relative();
+                    start_pts = f->pts;
+                    clock_origin_set = 1;
+                }
+                double clock = get_master_clock(&player, start_wall_us, start_pts);
+                if (f->pts > clock + SYNC_THRESHOLD_SEC) break;
+
+                display = f;
+                int is_last = (player.vq_count == 1);
+                int next_idx = (player.vq_head + 1) % VQ_SIZE;
+                int too_late = 0;
+                if (!is_last) {
+                    VFrame *nxt = &player.vq[next_idx];
+                    if (nxt->pts <= clock - DROP_THRESHOLD_SEC) too_late = 1;
+                }
+                player.vq_head = next_idx;
+                player.vq_count--;
+                if (!too_late) break;
             }
-            SDL_UnlockMutex(player.frame_mu);
+            if (display && texture) {
+                SDL_UpdateTexture(texture, NULL, display->buf, player.width * 4);
+            }
+            SDL_UnlockMutex(player.vq_mu);
+            SDL_CondSignal(player.vq_not_full);
 
             SDL_RenderClear(renderer);
             SDL_RenderCopy(renderer, texture, NULL, NULL);
             SDL_RenderPresent(renderer);
+
+            if (SDL_AtomicGet(&player.eof) && player.vq_count == 0) running = 0;
         } else {
             if (SDL_AtomicGet(&player.eof) &&
                 (!player.has_audio || SDL_GetQueuedAudioSize(player.adec.dev) == 0)) {
@@ -463,13 +568,16 @@ int main(int argc, char **argv) {
     }
 
     SDL_AtomicSet(&player.quit, 1);
+    SDL_CondSignal(player.vq_not_full);
     SDL_WaitThread(io, NULL);
 
     if (player.has_video) video_decoder_deinit(&player.vdec);
     if (player.has_audio) audio_decoder_deinit(&player.adec);
     demuxer_deinit(&player.dmx);
-    if (player.frame_mu) SDL_DestroyMutex(player.frame_mu);
-    free(player.frame_buf);
+    for (int i = 0; i < VQ_SIZE; i++) free(player.vq[i].buf);
+    if (player.vq_not_full) SDL_DestroyCond(player.vq_not_full);
+    if (player.vq_mu) SDL_DestroyMutex(player.vq_mu);
+    if (player.clock_mu) SDL_DestroyMutex(player.clock_mu);
     if (texture) SDL_DestroyTexture(texture);
     if (renderer) SDL_DestroyRenderer(renderer);
     if (window) SDL_DestroyWindow(window);
