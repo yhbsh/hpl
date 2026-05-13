@@ -45,6 +45,8 @@ typedef struct {
     AVFrame *rgba_frame;
     SwsContext *sws_ctx;
     AVRational time_base;
+    AVRational frame_rate;
+    int64_t frame_counter;
 } VideoDecoder;
 
 typedef struct {
@@ -133,6 +135,14 @@ static int video_decoder_init(VideoDecoder *vdec, Demuxer *dmx, int out_w, int o
 
     vdec->time_base = stream->time_base;
 
+    vdec->frame_rate = av_guess_frame_rate(dmx->fmt_ctx, stream, NULL);
+    if (vdec->frame_rate.num <= 0 || vdec->frame_rate.den <= 0) {
+        vdec->frame_rate = (AVRational){30, 1};
+        av_log(NULL, AV_LOG_WARNING, "could not determine frame rate, defaulting to %d/%d\n",
+               vdec->frame_rate.num, vdec->frame_rate.den);
+    }
+    vdec->frame_counter = 0;
+
     return 0;
 }
 
@@ -149,7 +159,12 @@ static int video_decoder_receive(VideoDecoder *vdec, uint8_t **out_rgba, double 
 
     int64_t pts = vdec->frame->best_effort_timestamp;
     if (pts == AV_NOPTS_VALUE) pts = vdec->frame->pts;
-    *out_pts = (pts == AV_NOPTS_VALUE) ? 0.0 : pts * av_q2d(vdec->time_base);
+    if (pts == AV_NOPTS_VALUE) {
+        *out_pts = vdec->frame_counter * av_q2d(av_inv_q(vdec->frame_rate));
+    } else {
+        *out_pts = pts * av_q2d(vdec->time_base);
+    }
+    vdec->frame_counter++;
     return 0;
 }
 
@@ -356,7 +371,8 @@ static int io_thread(void *data) {
         p->height = cp->height;
         if (video_decoder_init(&p->vdec, &p->dmx, p->width, p->height) == 0) {
             p->has_video = 1;
-            fprintf(stdout, "video: %s (%dx%d)\n", p->vdec.codec->name, p->width, p->height);
+            fprintf(stdout, "video: %s (%dx%d @ %.3f fps)\n", p->vdec.codec->name, p->width, p->height,
+                    av_q2d(p->vdec.frame_rate));
         } else {
             fprintf(stderr, "warning: video stream found but decoder init failed\n");
         }

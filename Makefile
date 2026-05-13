@@ -4,7 +4,7 @@ CFLAGS  := `pkg-config --cflags libavformat libavcodec libavutil libswscale libs
 LDFLAGS := `pkg-config --libs libavformat libavcodec libavutil libswscale libswresample sdl2`
 
 main: main.c
-	clang -o main main.c $(CFLAGS) $(LDFLAGS)
+	clang -O3 -o main main.c $(CFLAGS) $(LDFLAGS)
 
 install: main
 	cp main $(PREFIX)/hpl
