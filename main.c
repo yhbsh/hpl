@@ -4,25 +4,25 @@
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
 #include <libavutil/time.h>
-#include <libswscale/swscale.h>
 #include <libswresample/swresample.h>
+#include <libswscale/swscale.h>
 
-#include <SDL.h>
-#include <SDL_ttf.h>
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_ttf.h>
 
+#include <getopt.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <getopt.h>
 #include <string.h>
-#include <math.h>
 
 #define VQ_SIZE 8
 #define SYNC_THRESHOLD_SEC 0.01
 #define DROP_THRESHOLD_SEC 0.10
-#define SEEK_STEP_SEC      5.0
-#define SEEK_STEP_BIG_SEC  10.0
-#define VOLUME_STEP        ((int)(SDL_MIX_MAXVOLUME / 20))
-#define OSD_HOLD_US        1500000
+#define SEEK_STEP_SEC 5.0
+#define SEEK_STEP_BIG_SEC 10.0
+#define VOLUME_STEP ((int)(SDL_MIX_MAXVOLUME / 20))
+#define OSD_HOLD_US 1500000
 
 typedef struct {
     SDL_atomic_t *quit;
@@ -130,10 +130,7 @@ static int video_decoder_init(VideoDecoder *vdec, Demuxer *dmx, int out_w, int o
     vdec->rgba_frame = av_frame_alloc();
     if (!vdec->frame || !vdec->rgba_frame) return AVERROR(ENOMEM);
 
-    vdec->sws_ctx = sws_getContext(
-        vdec->codec_ctx->width, vdec->codec_ctx->height, vdec->codec_ctx->pix_fmt,
-        out_w, out_h, AV_PIX_FMT_RGBA, SWS_BILINEAR, NULL, NULL, NULL
-    );
+    vdec->sws_ctx = sws_getContext(vdec->codec_ctx->width, vdec->codec_ctx->height, vdec->codec_ctx->pix_fmt, out_w, out_h, AV_PIX_FMT_RGBA, SWS_BILINEAR, NULL, NULL, NULL);
     if (!vdec->sws_ctx) return AVERROR(EINVAL);
 
     vdec->rgba_frame->format = AV_PIX_FMT_RGBA;
@@ -145,8 +142,7 @@ static int video_decoder_init(VideoDecoder *vdec, Demuxer *dmx, int out_w, int o
     vdec->frame_rate = av_guess_frame_rate(dmx->fmt_ctx, stream, NULL);
     if (vdec->frame_rate.num <= 0 || vdec->frame_rate.den <= 0) {
         vdec->frame_rate = (AVRational){30, 1};
-        av_log(NULL, AV_LOG_WARNING, "could not determine frame rate, defaulting to %d/%d\n",
-               vdec->frame_rate.num, vdec->frame_rate.den);
+        av_log(NULL, AV_LOG_WARNING, "could not determine frame rate, defaulting to %d/%d\n", vdec->frame_rate.num, vdec->frame_rate.den);
     }
     vdec->frame_counter = 0;
 
@@ -216,11 +212,11 @@ static int audio_decoder_init(AudioDecoder *adec, Demuxer *dmx) {
     if (!adec->swr_ctx) return AVERROR(ENOMEM);
 
     AVChannelLayout out_ch_layout = AV_CHANNEL_LAYOUT_STEREO;
-    av_opt_set_chlayout(adec->swr_ctx, "in_chlayout",  &adec->codec_ctx->ch_layout, 0);
+    av_opt_set_chlayout(adec->swr_ctx, "in_chlayout", &adec->codec_ctx->ch_layout, 0);
     av_opt_set_chlayout(adec->swr_ctx, "out_chlayout", &out_ch_layout, 0);
-    av_opt_set_int(adec->swr_ctx, "in_sample_rate",  adec->codec_ctx->sample_rate, 0);
+    av_opt_set_int(adec->swr_ctx, "in_sample_rate", adec->codec_ctx->sample_rate, 0);
     av_opt_set_int(adec->swr_ctx, "out_sample_rate", out_sample_rate, 0);
-    av_opt_set_sample_fmt(adec->swr_ctx, "in_sample_fmt",  adec->codec_ctx->sample_fmt, 0);
+    av_opt_set_sample_fmt(adec->swr_ctx, "in_sample_fmt", adec->codec_ctx->sample_fmt, 0);
     av_opt_set_sample_fmt(adec->swr_ctx, "out_sample_fmt", AV_SAMPLE_FMT_S16, 0);
 
     if ((ret = swr_init(adec->swr_ctx)) < 0) return ret;
@@ -261,9 +257,7 @@ static int audio_decoder_receive(AudioDecoder *adec, int volume) {
         }
 
         uint8_t *out_buf = adec->buf;
-        int converted = swr_convert(adec->swr_ctx, &out_buf, out_samples,
-                                    (const uint8_t **)adec->frame->extended_data,
-                                    adec->frame->nb_samples);
+        int converted = swr_convert(adec->swr_ctx, &out_buf, out_samples, (const uint8_t **)adec->frame->extended_data, adec->frame->nb_samples);
         if (converted > 0) {
             int bytes = converted * 2 * sizeof(int16_t);
             if (volume >= SDL_MIX_MAXVOLUME) {
@@ -366,9 +360,7 @@ static double get_master_clock(Player *p, int64_t start_wall_us, double start_pt
 
 static void push_video_frame(Player *p, uint8_t *rgba, double pts, int expected_serial) {
     SDL_LockMutex(p->vq_mu);
-    while (p->vq_count == VQ_SIZE
-           && !SDL_AtomicGet(&p->quit)
-           && SDL_AtomicGet(&p->seek_serial) == expected_serial) {
+    while (p->vq_count == VQ_SIZE && !SDL_AtomicGet(&p->quit) && SDL_AtomicGet(&p->seek_serial) == expected_serial) {
         SDL_CondWaitTimeout(p->vq_not_full, p->vq_mu, 20);
     }
     if (SDL_AtomicGet(&p->quit) || SDL_AtomicGet(&p->seek_serial) != expected_serial) {
@@ -420,8 +412,7 @@ static int io_thread(void *data) {
         p->height = cp->height;
         if (video_decoder_init(&p->vdec, &p->dmx, p->width, p->height) == 0) {
             p->has_video = 1;
-            fprintf(stdout, "video: %s (%dx%d @ %.3f fps)\n", p->vdec.codec->name, p->width, p->height,
-                    av_q2d(p->vdec.frame_rate));
+            fprintf(stdout, "video: %s (%dx%d @ %.3f fps)\n", p->vdec.codec->name, p->width, p->height, av_q2d(p->vdec.frame_rate));
         } else {
             fprintf(stderr, "warning: video stream found but decoder init failed\n");
         }
@@ -430,9 +421,7 @@ static int io_thread(void *data) {
     if (p->dmx.audio_stream_idx >= 0) {
         if (audio_decoder_init(&p->adec, &p->dmx) == 0) {
             p->has_audio = 1;
-            fprintf(stdout, "audio: %s (%d Hz, %d ch)\n",
-                    p->adec.codec->name, p->adec.codec_ctx->sample_rate,
-                    p->adec.codec_ctx->ch_layout.nb_channels);
+            fprintf(stdout, "audio: %s (%d Hz, %d ch)\n", p->adec.codec->name, p->adec.codec_ctx->sample_rate, p->adec.codec_ctx->ch_layout.nb_channels);
         } else {
             fprintf(stderr, "warning: audio stream found but decoder init failed\n");
         }
@@ -458,9 +447,7 @@ static int io_thread(void *data) {
             tgt = p->seek_target_sec;
             SDL_UnlockMutex(p->clock_mu);
 
-            int sidx = p->has_video ? p->dmx.video_stream_idx
-                     : p->has_audio ? p->dmx.audio_stream_idx
-                     : -1;
+            int sidx = p->has_video ? p->dmx.video_stream_idx : p->has_audio ? p->dmx.audio_stream_idx : -1;
             int64_t ts;
             if (sidx >= 0) {
                 AVStream *st = p->dmx.fmt_ctx->streams[sidx];
@@ -471,8 +458,7 @@ static int io_thread(void *data) {
 
             int sret = av_seek_frame(p->dmx.fmt_ctx, sidx, ts, AVSEEK_FLAG_BACKWARD);
             if (sret < 0) {
-                sret = avformat_seek_file(p->dmx.fmt_ctx, sidx, INT64_MIN, ts, INT64_MAX,
-                                          AVSEEK_FLAG_BACKWARD);
+                sret = avformat_seek_file(p->dmx.fmt_ctx, sidx, INT64_MIN, ts, INT64_MAX, AVSEEK_FLAG_BACKWARD);
             }
             if (sret < 0) {
                 sret = av_seek_frame(p->dmx.fmt_ctx, sidx, ts, AVSEEK_FLAG_ANY);
@@ -508,15 +494,13 @@ static int io_thread(void *data) {
         if (ret < 0) {
             if (seek_failed) {
                 seek_failed = 0;
-                while (!SDL_AtomicGet(&p->quit)
-                       && SDL_AtomicGet(&p->seek_serial) == local_serial) {
+                while (!SDL_AtomicGet(&p->quit) && SDL_AtomicGet(&p->seek_serial) == local_serial) {
                     SDL_Delay(20);
                 }
                 continue;
             }
             SDL_AtomicSet(&p->eof, 1);
-            while (!SDL_AtomicGet(&p->quit)
-                   && SDL_AtomicGet(&p->seek_serial) == local_serial) {
+            while (!SDL_AtomicGet(&p->quit) && SDL_AtomicGet(&p->seek_serial) == local_serial) {
                 SDL_Delay(20);
             }
             continue;
@@ -562,13 +546,7 @@ static int osd_init(OSD *osd) {
         return -1;
     }
     static const char *paths[] = {
-        "/System/Library/Fonts/Menlo.ttc",
-        "/System/Library/Fonts/Helvetica.ttc",
-        "/System/Library/Fonts/SFNS.ttf",
-        "/System/Library/Fonts/Supplemental/Arial.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/TTF/DejaVuSans.ttf",
-        NULL,
+        "/System/Library/Fonts/Menlo.ttc", "/System/Library/Fonts/Helvetica.ttc", "/System/Library/Fonts/SFNS.ttf", "/System/Library/Fonts/Supplemental/Arial.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf", NULL,
     };
     for (int i = 0; paths[i]; i++) {
         osd->font = TTF_OpenFont(paths[i], 20);
@@ -596,7 +574,7 @@ static void osd_draw_text(SDL_Renderer *r, OSD *osd, const char *txt, int x, int
     if (!s) return;
     SDL_Texture *t = SDL_CreateTextureFromSurface(r, s);
     if (t) {
-        SDL_Rect dst = { x, y, s->w, s->h };
+        SDL_Rect dst = {x, y, s->w, s->h};
         SDL_RenderCopy(r, t, NULL, &dst);
         SDL_DestroyTexture(t);
     }
@@ -609,13 +587,13 @@ static void fmt_time(double sec, char *out, size_t n) {
     int h = s / 3600;
     int m = (s / 60) % 60;
     int ss = s % 60;
-    if (h > 0) snprintf(out, n, "%d:%02d:%02d", h, m, ss);
-    else snprintf(out, n, "%d:%02d", m, ss);
+    if (h > 0)
+        snprintf(out, n, "%d:%02d:%02d", h, m, ss);
+    else
+        snprintf(out, n, "%d:%02d", m, ss);
 }
 
-static void osd_draw(SDL_Renderer *r, OSD *osd, Player *p, double clock,
-                     int64_t now_us, int64_t vol_until_us, int64_t seek_until_us,
-                     int win_w, int win_h) {
+static void osd_draw(SDL_Renderer *r, OSD *osd, Player *p, double clock, int64_t now_us, int64_t vol_until_us, int64_t seek_until_us, int win_w, int win_h) {
     SDL_Color white = {255, 255, 255, 255};
     SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
 
@@ -624,8 +602,8 @@ static void osd_draw(SDL_Renderer *r, OSD *osd, Player *p, double clock,
         int bw = 14, bh = 60, gap = 10;
         int cx = win_w / 2;
         int cy = 60;
-        SDL_Rect a = { cx - bw - gap/2, cy - bh/2, bw, bh };
-        SDL_Rect b = { cx + gap/2,      cy - bh/2, bw, bh };
+        SDL_Rect a = {cx - bw - gap / 2, cy - bh / 2, bw, bh};
+        SDL_Rect b = {cx + gap / 2, cy - bh / 2, bw, bh};
         SDL_RenderFillRect(r, &a);
         SDL_RenderFillRect(r, &b);
     }
@@ -635,18 +613,20 @@ static void osd_draw(SDL_Renderer *r, OSD *osd, Player *p, double clock,
         int muted = SDL_AtomicGet(&p->muted);
         char buf[64];
         int pct = (int)((vol * 100 + SDL_MIX_MAXVOLUME / 2) / SDL_MIX_MAXVOLUME);
-        if (muted) snprintf(buf, sizeof(buf), "MUTED");
-        else       snprintf(buf, sizeof(buf), "vol %d%%", pct);
+        if (muted)
+            snprintf(buf, sizeof(buf), "MUTED");
+        else
+            snprintf(buf, sizeof(buf), "vol %d%%", pct);
 
         int bar_w = 200, bar_h = 12;
         int bar_x = win_w - bar_w - 20;
         int bar_y = win_h - bar_h - 30;
         SDL_SetRenderDrawColor(r, 255, 255, 255, 70);
-        SDL_Rect bg = { bar_x, bar_y, bar_w, bar_h };
+        SDL_Rect bg = {bar_x, bar_y, bar_w, bar_h};
         SDL_RenderFillRect(r, &bg);
         if (!muted) {
             SDL_SetRenderDrawColor(r, 255, 255, 255, 220);
-            SDL_Rect fg = { bar_x, bar_y, (bar_w * vol) / SDL_MIX_MAXVOLUME, bar_h };
+            SDL_Rect fg = {bar_x, bar_y, (bar_w * vol) / SDL_MIX_MAXVOLUME, bar_h};
             SDL_RenderFillRect(r, &fg);
         } else {
             SDL_SetRenderDrawColor(r, 220, 60, 60, 220);
@@ -675,25 +655,31 @@ int main(int argc, char **argv) {
 
     while ((opt = getopt(argc, argv, "l:h")) != -1) {
         switch (opt) {
-            case 'l': {
-                if (strcmp(optarg, "QUIET") == 0) log_level = AV_LOG_QUIET;
-                else if (strcmp(optarg, "ERROR") == 0) log_level = AV_LOG_ERROR;
-                else if (strcmp(optarg, "WARNING") == 0) log_level = AV_LOG_WARNING;
-                else if (strcmp(optarg, "INFO") == 0) log_level = AV_LOG_INFO;
-                else if (strcmp(optarg, "DEBUG") == 0) log_level = AV_LOG_DEBUG;
-                else if (strcmp(optarg, "TRACE") == 0) log_level = AV_LOG_TRACE;
-                else {
-                    fprintf(stderr, "error: unknown log level '%s'\n", optarg);
-                    return 1;
-                }
-                break;
+        case 'l': {
+            if (strcmp(optarg, "QUIET") == 0)
+                log_level = AV_LOG_QUIET;
+            else if (strcmp(optarg, "ERROR") == 0)
+                log_level = AV_LOG_ERROR;
+            else if (strcmp(optarg, "WARNING") == 0)
+                log_level = AV_LOG_WARNING;
+            else if (strcmp(optarg, "INFO") == 0)
+                log_level = AV_LOG_INFO;
+            else if (strcmp(optarg, "DEBUG") == 0)
+                log_level = AV_LOG_DEBUG;
+            else if (strcmp(optarg, "TRACE") == 0)
+                log_level = AV_LOG_TRACE;
+            else {
+                fprintf(stderr, "error: unknown log level '%s'\n", optarg);
+                return 1;
             }
-            case 'h':
-            default:
-                fprintf(stderr, "usage: %s [options] <url>\n", argv[0]);
-                fprintf(stderr, "  -l LEVEL  log level: QUIET, ERROR, WARNING, INFO, DEBUG, TRACE (default TRACE)\n");
-                fprintf(stderr, "  -h        show this help\n");
-                return opt == 'h' ? 0 : 1;
+            break;
+        }
+        case 'h':
+        default:
+            fprintf(stderr, "usage: %s [options] <url>\n", argv[0]);
+            fprintf(stderr, "  -l LEVEL  log level: QUIET, ERROR, WARNING, INFO, DEBUG, TRACE (default TRACE)\n");
+            fprintf(stderr, "  -h        show this help\n");
+            return opt == 'h' ? 0 : 1;
         }
     }
 
@@ -792,8 +778,7 @@ int main(int argc, char **argv) {
                     double delta = (k == SDLK_LEFT) ? -step : step;
                     double target = base + delta;
                     if (target < 0) target = 0;
-                    if (player.duration_sec > 0 && target > player.duration_sec - 0.5)
-                        target = player.duration_sec - 0.5;
+                    if (player.duration_sec > 0 && target > player.duration_sec - 0.5) target = player.duration_sec - 0.5;
                     SDL_LockMutex(player.clock_mu);
                     player.seek_target_sec = target;
                     if (SDL_AtomicGet(&player.paused)) player.pause_clock = target;
@@ -813,8 +798,7 @@ int main(int argc, char **argv) {
                     SDL_AtomicSet(&player.volume, v);
                     if (v > 0) SDL_AtomicSet(&player.muted, 0);
                     osd_vol_until_us = now_us + OSD_HOLD_US;
-                    fprintf(stdout, "volume %d%%\n",
-                            (v * 100 + SDL_MIX_MAXVOLUME / 2) / SDL_MIX_MAXVOLUME);
+                    fprintf(stdout, "volume %d%%\n", (v * 100 + SDL_MIX_MAXVOLUME / 2) / SDL_MIX_MAXVOLUME);
                 } else if (k == SDLK_m) {
                     int m = !SDL_AtomicGet(&player.muted);
                     SDL_AtomicSet(&player.muted, m);
@@ -824,8 +808,7 @@ int main(int argc, char **argv) {
                     int fs = !SDL_AtomicGet(&player.fullscreen);
                     SDL_AtomicSet(&player.fullscreen, fs);
                     if (window) {
-                        SDL_SetWindowFullscreen(window,
-                            fs ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+                        SDL_SetWindowFullscreen(window, fs ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
                     }
                 }
             }
@@ -842,8 +825,7 @@ int main(int argc, char **argv) {
         }
 
         if (player.has_video && !window) {
-            window = SDL_CreateWindow("hpl", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                      player.width, player.height, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+            window = SDL_CreateWindow("hpl", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, player.width, player.height, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
             if (!window) {
                 fprintf(stderr, "error: SDL_CreateWindow: %s\n", SDL_GetError());
                 running = 0;
@@ -859,8 +841,7 @@ int main(int argc, char **argv) {
             }
             SDL_RenderSetLogicalSize(renderer, player.width, player.height);
 
-            texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING,
-                                        player.width, player.height);
+            texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, player.width, player.height);
             if (!texture) {
                 fprintf(stderr, "error: SDL_CreateTexture: %s\n", SDL_GetError());
                 running = 0;
@@ -919,15 +900,13 @@ int main(int argc, char **argv) {
                 clk = get_master_clock(&player, start_wall_us, start_pts);
             }
             if (osd_ready) {
-                osd_draw(renderer, &osd, &player, clk, now_us,
-                         osd_vol_until_us, osd_seek_until_us, win_w, win_h);
+                osd_draw(renderer, &osd, &player, clk, now_us, osd_vol_until_us, osd_seek_until_us, win_w, win_h);
             }
             SDL_RenderPresent(renderer);
 
             if (!paused && SDL_AtomicGet(&player.eof) && player.vq_count == 0) running = 0;
         } else {
-            if (!SDL_AtomicGet(&player.paused) && SDL_AtomicGet(&player.eof) &&
-                (!player.has_audio || SDL_GetQueuedAudioSize(player.adec.dev) == 0)) {
+            if (!SDL_AtomicGet(&player.paused) && SDL_AtomicGet(&player.eof) && (!player.has_audio || SDL_GetQueuedAudioSize(player.adec.dev) == 0)) {
                 running = 0;
             }
             SDL_Delay(10);
@@ -945,7 +924,8 @@ int main(int argc, char **argv) {
     if (player.has_video) video_decoder_deinit(&player.vdec);
     if (player.has_audio) audio_decoder_deinit(&player.adec);
     demuxer_deinit(&player.dmx);
-    for (int i = 0; i < VQ_SIZE; i++) free(player.vq[i].buf);
+    for (int i = 0; i < VQ_SIZE; i++)
+        free(player.vq[i].buf);
     if (player.vq_not_full) SDL_DestroyCond(player.vq_not_full);
     if (player.vq_mu) SDL_DestroyMutex(player.vq_mu);
     if (player.clock_mu) SDL_DestroyMutex(player.clock_mu);
